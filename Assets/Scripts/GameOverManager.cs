@@ -94,6 +94,8 @@ public sealed class GameOverManager : MonoBehaviour
             return;
         }
 
+        ClearSaveDataBeforeSceneChange();
+
         KillTweens();
         SetPhysicsRaycastersEnabled(false);
 
@@ -301,6 +303,7 @@ public sealed class GameOverManager : MonoBehaviour
     public void OnReplayButtonClicked()
     {
         PlayUiClick();
+        ClearSaveDataBeforeSceneChange();
         if (uiManager != null)
             uiManager.RestartGame();
     }
@@ -308,6 +311,7 @@ public sealed class GameOverManager : MonoBehaviour
     public void OnHomeButtonClicked()
     {
         PlayUiClick();
+        ClearSaveDataBeforeSceneChange();
         if (uiManager != null)
             uiManager.GoToMainMenu();
     }
@@ -361,6 +365,15 @@ public sealed class GameOverManager : MonoBehaviour
     {
         if (AudioManager.Instance != null)
             AudioManager.Instance.PlaySFX(AudioManager.Instance.uiClickClip);
+    }
+
+    /// <summary>Oyun bittiğinde veya sahne değişmeden önce: bitmiş tahta tekrar yüklenmesin.</summary>
+    static void ClearSaveDataBeforeSceneChange()
+    {
+        if (SaveManager.Instance != null)
+            SaveManager.Instance.ClearSaveData();
+        else
+            SaveManager.DeleteSaveFile();
     }
 
     void KillTweens()

@@ -36,6 +36,8 @@ public sealed class SaveManager : MonoBehaviour
     public const int CurrentSaveVersion = 1;
     const string FileName = "chromablocks_save.json";
 
+    public static SaveManager Instance { get; private set; }
+
     static bool _restoredFromSaveThisLoad;
 
     [SerializeField] GridManager gridManager;
@@ -45,12 +47,26 @@ public sealed class SaveManager : MonoBehaviour
 
     void Awake()
     {
+        if (Instance != null && Instance != this)
+        {
+            Destroy(gameObject);
+            return;
+        }
+
+        Instance = this;
+
         if (gridManager == null)
             gridManager = FindAnyObjectByType<GridManager>();
         if (shapeSpawner == null)
             shapeSpawner = FindAnyObjectByType<ShapeSpawner>();
 
         _pendingEnvelope = TryReadEnvelopeFromDisk();
+    }
+
+    void OnDestroy()
+    {
+        if (Instance == this)
+            Instance = null;
     }
 
     void Start()
@@ -133,6 +149,12 @@ public sealed class SaveManager : MonoBehaviour
         }
     }
 
+    /// <summary>Oyun kaydı (JSON) tamamen silinir. Izgara durumu PlayerPrefs'te tutulmuyor.</summary>
+    public void ClearSaveData()
+    {
+        DeleteSaveFile();
+    }
+
     SaveGameEnvelope TryReadEnvelopeFromDisk()
     {
         var path = Path.Combine(Application.persistentDataPath, FileName);
@@ -177,6 +199,9 @@ public sealed class SaveManager : MonoBehaviour
     void SaveToDisk()
     {
         if (gridManager == null || shapeSpawner == null)
+            return;
+
+        if (shapeSpawner.IsGameOver)
             return;
 
         if (gridManager.IsResolvingMatches)
