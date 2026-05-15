@@ -54,8 +54,11 @@ public sealed class CameraManager : MonoBehaviour
         PlayShake(strongDuration, strongStrength, strongVibrato);
     }
 
-    void PlayShake(float duration, float strength, int vibrato)
+    void PlayShake(float duration, float strength, int vibrato, bool haptic = false)
     {
+        if (!SettingsManager.AllowsScreenShakeAndHaptics)
+            return;
+
         if (_camTransform == null)
             return;
 
@@ -67,6 +70,9 @@ public sealed class CameraManager : MonoBehaviour
             .SetUpdate(true)
             .OnKill(SnapToAnchor)
             .OnComplete(SnapToAnchor);
+
+        if (haptic)
+            SettingsManager.TryHapticPulse();
     }
 
     void SnapToAnchor()

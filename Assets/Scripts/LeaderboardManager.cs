@@ -18,6 +18,8 @@ public class LeaderboardManager : MonoBehaviour
         [SerializeField] private TMP_Text nameText;
         [SerializeField] private TMP_Text scoreText;
 
+        public bool HasRoot => root != null;
+
         public void SetActive(bool value)
         {
             if (root != null) root.SetActive(value);
@@ -28,6 +30,25 @@ public class LeaderboardManager : MonoBehaviour
             if (rankText != null) rankText.text = rank;
             if (nameText != null) nameText.text = name;
             if (scoreText != null) scoreText.text = score;
+        }
+
+        public static LeaderboardSlot FromTransform(Transform slotRoot)
+        {
+            var slot = new LeaderboardSlot();
+            slot.root = slotRoot != null ? slotRoot.gameObject : null;
+            if (slotRoot == null)
+                return slot;
+
+            slot.rankText = FindTmp(slotRoot, "RankText");
+            slot.nameText = FindTmp(slotRoot, "NameText");
+            slot.scoreText = FindTmp(slotRoot, "ScoreText");
+            return slot;
+        }
+
+        static TMP_Text FindTmp(Transform parent, string childName)
+        {
+            var t = parent.Find(childName);
+            return t != null ? t.GetComponent<TMP_Text>() : null;
         }
     }
 
@@ -51,6 +72,76 @@ public class LeaderboardManager : MonoBehaviour
     int _defaultTab = 0;
 
     private int testSkorum = 50000;
+
+    void Awake()
+    {
+        TryAutoBindReferences();
+    }
+
+    /// <summary>Prefab/sahne referansları boşsa panel hiyerarşisinden doldurur (GameScene prefab kurulumu).</summary>
+    public void TryAutoBindReferences()
+    {
+        var root = transform;
+
+        if (tabController == null)
+            tabController = GetComponentInChildren<TabController>(true);
+
+        if (loadingRoot == null)
+        {
+            for (int i = 0; i < root.childCount; i++)
+            {
+                var child = root.GetChild(i);
+                if (child.name.StartsWith("Loading", System.StringComparison.Ordinal))
+                {
+                    loadingRoot = child.gameObject;
+                    break;
+                }
+            }
+
+            if (loadingRoot == null)
+            {
+                var deep = FindDeepChild(root, "Loading...");
+                if (deep != null)
+                    loadingRoot = deep.gameObject;
+            }
+        }
+
+        if (loadingText == null && loadingRoot != null)
+            loadingText = loadingRoot.GetComponentInChildren<TMP_Text>(true);
+
+        if (topSlots == null || topSlots.Count == 0)
+        {
+            topSlots = new List<LeaderboardSlot>(10);
+            for (int i = 1; i <= 10; i++)
+            {
+                var slotTr = FindDeepChild(root, $"Slot_{i}");
+                if (slotTr != null)
+                    topSlots.Add(LeaderboardSlot.FromTransform(slotTr));
+            }
+        }
+
+        if (localPlayerSlot == null || !localPlayerSlot.HasRoot)
+        {
+            var localTr = FindDeepChild(root, "LocalPlayerSlot");
+            if (localTr != null)
+                localPlayerSlot = LeaderboardSlot.FromTransform(localTr);
+        }
+    }
+
+    static Transform FindDeepChild(Transform parent, string name)
+    {
+        if (parent.name == name)
+            return parent;
+
+        for (int i = 0; i < parent.childCount; i++)
+        {
+            var found = FindDeepChild(parent.GetChild(i), name);
+            if (found != null)
+                return found;
+        }
+
+        return null;
+    }
 
     void OnEnable()
     {

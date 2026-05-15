@@ -19,10 +19,20 @@ public sealed class GridCell : MonoBehaviour
     [Header("Visuals")]
     [SerializeField] Color previewColor = new Color(1f, 1f, 1f, 0.30f);
     [SerializeField] Color occupiedTint = new Color(1f, 1f, 1f, 1f);
+    [SerializeField] Color predictiveClearColor = new Color(0.55f, 0.95f, 1f, 0.62f);
 
     SpriteRenderer _sr;
     Color _baseColor;
     bool _hasSprite;
+    bool _highlightActive;
+    HighlightKind _highlightKind;
+
+    enum HighlightKind
+    {
+        None,
+        PlacementHover,
+        PredictiveClear
+    }
 
     public int X => x;
     public int Y => y;
@@ -68,14 +78,50 @@ public sealed class GridCell : MonoBehaviour
 
     public void SetPreview(bool value)
     {
-        if (!_hasSprite || _sr == null) return;
+        if (value)
+            SetPlacementHoverHighlight();
+        else
+            ResetHighlight();
+    }
+
+    public void SetPlacementHoverHighlight()
+    {
         if (isOccupied)
+            return;
+
+        _highlightActive = true;
+        _highlightKind = HighlightKind.PlacementHover;
+        ApplyHighlightVisual();
+    }
+
+    public void SetPredictiveClearHighlight()
+    {
+        _highlightActive = true;
+        _highlightKind = HighlightKind.PredictiveClear;
+        ApplyHighlightVisual();
+    }
+
+    public void ResetHighlight()
+    {
+        _highlightActive = false;
+        _highlightKind = HighlightKind.None;
+        ApplyHighlightVisual();
+    }
+
+    void ApplyHighlightVisual()
+    {
+        if (!_hasSprite || _sr == null)
+            return;
+
+        if (!_highlightActive)
         {
-            _sr.color = occupiedTint;
+            _sr.color = isOccupied ? occupiedTint : _baseColor;
             return;
         }
 
-        _sr.color = value ? previewColor : _baseColor;
+        _sr.color = _highlightKind == HighlightKind.PredictiveClear
+            ? predictiveClearColor
+            : previewColor;
     }
 }
 

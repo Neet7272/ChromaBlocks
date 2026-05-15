@@ -34,6 +34,10 @@ public sealed class GridManager : MonoBehaviour
     [SerializeField, Min(0.05f)] float floatingRiseY = 1f;
     [SerializeField, Min(0.01f)] float floatingDuration = 0.6f;
 
+    [Header("Yerleştirme / Patlama Juice")]
+    [SerializeField, Min(0.05f)] float clearShrinkDuration = 0.25f;
+    public ParticleSystem blastParticlePrefab;
+
     public GridCell[,] gridArray;
 
     /// <summary>Tahta güncellemesi (2x2 / cascade) bittikten sonra; hamle kontrolü burada yapılmalı.</summary>
@@ -47,18 +51,35 @@ public sealed class GridManager : MonoBehaviour
     /// <summary>2x2 patlama zinciri çalışırken tepsi refill'i vb. bekletilmeli (tahta durumu henüz kesin değil).</summary>
     public bool IsResolvingMatches => _isResolvingMatches;
 
-    readonly List<GridCell> _previewCells = new();
+    ShapeSpawner _shapeSpawner;
+
+    readonly List<GridCell> _highlightedCells = new();
     Transform _placedBlocksRoot;
     int _score;
 
     /// <summary>Skor her arttığı toplam değer (2x2 / lazer puanları).</summary>
     public int CurrentScore => _score;
 
+    /// <summary>Kaydet/yükle: tahta sakin iken genelde 0; zincir ortasında anlık değer.</summary>
+    public int CurrentComboMultiplier => _comboMultiplier;
+
     /// <summary>Toplam skor değiştiğinde (yeni toplam parametre olarak).</summary>
-    public event System.Action<int> OnScoreChanged;
+    /// <summary>(yeniToplam, bu olayda eklenen puan). Eklenen 0 ise senkron/revive — hayalet efekt yok.</summary>
+    /// <summary>(yeniToplam, eklenen, hayalet +X için dünya konumu; null = HUD varsayılanı).</summary>
+    public event System.Action<int, int, Vector3?> OnScoreChanged;
 
     int _comboMultiplier;
     bool _isResolvingMatches;
+    Coroutine _cascadeRoutine;
+
+    sealed class TraySnapshot
+    {
+        public int score;
+        public bool[,] occupied;
+        public Color[,] colors;
+    }
+
+    TraySnapshot _traySnapshot;
 
     Vector2 _cellWorldSize;
     float _stepX;
@@ -73,6 +94,8 @@ public sealed class GridManager : MonoBehaviour
     {
         if (cameraManager == null)
             cameraManager = FindAnyObjectByType<CameraManager>();
+        if (_shapeSpawner == null)
+            _shapeSpawner = FindAnyObjectByType<ShapeSpawner>();
     }
 
     void Start()
@@ -345,7 +368,7 @@ public sealed class GridManager : MonoBehaviour
             return true;
 
         if (currentShapes == null || currentShapes.Count == 0)
-            return true;
+            return HasNoOccupiedCells();
 
         if (HasNoOccupiedCells())
             return true;
@@ -466,31 +489,101 @@ public sealed class GridManager : MonoBehaviour
 
     public void UpdatePlacementPreview(Shape shape)
     {
-        if (!enablePreview) return;
+        if (!enablePreview)
+            return;
 
-        ClearPreview();
-        if (shape == null) return;
+        ResetHighlights();
+        if (shape == null)
+            return;
 
-        if (CanPlaceShape(shape, out var cells, out _))
+        if (!CanPlaceShape(shape, out var cells, out _))
+            return;
+
+        if (TrySimulateClearAfterPlacement(shape, cells, out var clearCells) && clearCells.Count > 0)
         {
             for (int i = 0; i < cells.Count; i++)
-            {
-                var c = cells[i];
-                if (c == null) continue;
-                c.SetPreview(true);
-                _previewCells.Add(c);
-            }
+                HighlightPredictiveClear(cells[i]);
+
+            foreach (var cell in clearCells)
+                HighlightPredictiveClear(cell);
+
+            return;
         }
+
+        for (int i = 0; i < cells.Count; i++)
+            HighlightPlacementHover(cells[i]);
     }
 
-    public void ClearPreview()
+    public void ClearPreview() => ResetHighlights();
+
+    public void ResetHighlights()
     {
-        for (int i = 0; i < _previewCells.Count; i++)
+        for (int i = 0; i < _highlightedCells.Count; i++)
         {
-            var c = _previewCells[i];
-            if (c != null) c.SetPreview(false);
+            var c = _highlightedCells[i];
+            if (c != null)
+                c.ResetHighlight();
         }
-        _previewCells.Clear();
+
+        _highlightedCells.Clear();
+    }
+
+    void HighlightPlacementHover(GridCell cell)
+    {
+        if (cell == null)
+            return;
+
+        cell.SetPlacementHoverHighlight();
+        if (!_highlightedCells.Contains(cell))
+            _highlightedCells.Add(cell);
+    }
+
+    void HighlightPredictiveClear(GridCell cell)
+    {
+        if (cell == null)
+            return;
+
+        cell.SetPredictiveClearHighlight();
+        if (!_highlightedCells.Contains(cell))
+            _highlightedCells.Add(cell);
+    }
+
+    bool TrySimulateClearAfterPlacement(Shape shape, List<GridCell> targetCells, out HashSet<GridCell> clearCells)
+    {
+        clearCells = new HashSet<GridCell>();
+        if (gridArray == null || shape == null || targetCells == null || targetCells.Count == 0)
+            return false;
+
+        var occupied = new bool[columns, rows];
+        var colors = new Color[columns, rows];
+        CaptureGridState(occupied, colors);
+
+        var blocks = shape.Blocks;
+        for (int i = 0; i < targetCells.Count; i++)
+        {
+            var cell = targetCells[i];
+            if (cell == null)
+                continue;
+
+            occupied[cell.X, cell.Y] = true;
+            if (blocks != null && i < blocks.Count)
+                colors[cell.X, cell.Y] = blocks[i].Color;
+        }
+
+        return TryBuild2x2ClearSetFromState(occupied, colors, out clearCells, out _);
+    }
+
+    void CaptureGridState(bool[,] occupied, Color[,] colors)
+    {
+        for (int y = 0; y < rows; y++)
+        {
+            for (int x = 0; x < columns; x++)
+            {
+                var cell = gridArray[x, y];
+                occupied[x, y] = cell != null && cell.IsOccupied;
+                colors[x, y] = cell != null ? cell.PlacedColor : default;
+            }
+        }
     }
 
     static Vector3 AverageWorldPosition(HashSet<GridCell> cells)
@@ -539,13 +632,35 @@ public sealed class GridManager : MonoBehaviour
 
     public bool TryPlaceShape(Shape shape)
     {
+        if (_isResolvingMatches)
+            return false;
+
         ClearPreview();
         if (!CanPlaceShape(shape, out var cells, out var anchorCell))
             return false;
 
+        var tileCount = shape.GetTileCount();
+        Vector3? placementPopupWorld = null;
+        if (cells != null && cells.Count > 0)
+        {
+            Vector3 sum = Vector3.zero;
+            var n = 0;
+            for (int i = 0; i < cells.Count; i++)
+            {
+                if (cells[i] == null)
+                    continue;
+                sum += cells[i].transform.position;
+                n++;
+            }
+
+            if (n > 0)
+                placementPopupWorld = sum / n;
+        }
+
         EnsurePlacedBlocksRoot();
 
         // Blokları koparıp hücrelere taşı
+        shape.transform.DOKill();
         var blocks = shape.DetachBlocksForPlacement(_placedBlocksRoot);
         for (int i = 0; i < blocks.Count; i++)
         {
@@ -554,15 +669,51 @@ public sealed class GridManager : MonoBehaviour
 
             if (b.Transform != null && cell != null)
             {
+                b.Transform.DOKill();
+                NormalizePlacedBlockScale(b.Transform);
                 PerfectMagnetSnap(b.Transform, cell.transform);
                 cell.SetPlacedBlock(b.Transform, b.Color);
                 cell.SetPreview(false);
             }
         }
 
+        _shapeSpawner?.NotifyShapeConsumed(shape);
         Destroy(shape.gameObject);
+        if (AudioManager.Instance != null)
+            AudioManager.Instance.PlaySFX(AudioManager.Instance.placeClip);
+
+        if (tileCount > 0)
+            AddScore(tileCount, placementPopupWorld);
+
+        HapticManager.Instance?.LightVibration();
+
         StartResolve2x2Cascade();
         return true;
+    }
+
+    void NormalizePlacedBlockScale(Transform block)
+    {
+        if (block == null || _cellWorldSize.x <= 0f || _cellWorldSize.y <= 0f)
+            return;
+
+        if (!block.TryGetComponent<SpriteRenderer>(out var sr) || sr.sprite == null)
+            return;
+
+        var sprite = sr.sprite;
+        var intrinsic = new Vector2(
+            sprite.rect.width / sprite.pixelsPerUnit,
+            sprite.rect.height / sprite.pixelsPerUnit);
+        if (intrinsic.x <= 0f || intrinsic.y <= 0f)
+            return;
+
+        var ps = block.parent != null ? block.parent.lossyScale : Vector3.one;
+        var px = Mathf.Max(Mathf.Abs(ps.x), 1e-6f);
+        var py = Mathf.Max(Mathf.Abs(ps.y), 1e-6f);
+
+        block.localScale = new Vector3(
+            _cellWorldSize.x / (intrinsic.x * px),
+            _cellWorldSize.y / (intrinsic.y * py),
+            1f);
     }
 
     static void PerfectMagnetSnap(Transform block, Transform cell)
@@ -614,12 +765,233 @@ public sealed class GridManager : MonoBehaviour
         }
     }
 
-    void AddScore(int amount)
+    void AddScore(int amount, Vector3? scorePopupWorld = null)
     {
         if (amount == 0) return;
         _score += amount;
-        Debug.Log($"[Score] +{amount} => Total={_score}");
-        OnScoreChanged?.Invoke(_score);
+        OnScoreChanged?.Invoke(_score, amount, scorePopupWorld);
+    }
+
+    /// <summary>Alt tepsiye 3 şekil geldiği anda tahta + skor kaydı (revive geri sarma).</summary>
+    public void CaptureTraySnapshot()
+    {
+        if (gridArray == null)
+            return;
+
+        var occ = new bool[columns, rows];
+        var cols = new Color[columns, rows];
+
+        for (int y = 0; y < rows; y++)
+        {
+            for (int x = 0; x < columns; x++)
+            {
+                var cell = gridArray[x, y];
+                if (cell == null || !cell.IsOccupied)
+                    continue;
+
+                occ[x, y] = true;
+                cols[x, y] = cell.PlacedColor;
+            }
+        }
+
+        _traySnapshot = new TraySnapshot
+        {
+            score = _score,
+            occupied = occ,
+            colors = cols
+        };
+    }
+
+    /// <summary>Revive: son tepsi spawn'ından beri yapılan yerleştirmeleri geri al.</summary>
+    public void RestoreTraySnapshot()
+    {
+        if (_traySnapshot == null || gridArray == null)
+            return;
+
+        if (_cascadeRoutine != null)
+        {
+            StopCoroutine(_cascadeRoutine);
+            _cascadeRoutine = null;
+        }
+
+        _isResolvingMatches = false;
+        _comboMultiplier = 0;
+        ClearPreview();
+
+        var blockPrefab = ResolveBlockPrefabForRestore();
+        EnsurePlacedBlocksRoot();
+
+        if (_placedBlocksRoot != null)
+        {
+            for (int i = _placedBlocksRoot.childCount - 1; i >= 0; i--)
+            {
+                var child = _placedBlocksRoot.GetChild(i);
+                if (child != null)
+                {
+                    child.DOKill();
+                    Destroy(child.gameObject);
+                }
+            }
+        }
+
+        for (int y = 0; y < rows; y++)
+        {
+            for (int x = 0; x < columns; x++)
+            {
+                var cell = gridArray[x, y];
+                if (cell == null)
+                    continue;
+
+                cell.ClearPlacedBlock();
+
+                if (!_traySnapshot.occupied[x, y] || blockPrefab == null)
+                    continue;
+
+                var go = Instantiate(blockPrefab, _placedBlocksRoot);
+                go.name = $"ReviveBlock_{x}_{y}";
+
+                if (go.TryGetComponent<SpriteRenderer>(out var sr))
+                    sr.color = _traySnapshot.colors[x, y];
+
+                NormalizePlacedBlockScale(go.transform);
+                PerfectMagnetSnap(go.transform, cell.transform);
+                cell.SetPlacedBlock(go.transform, _traySnapshot.colors[x, y]);
+            }
+        }
+
+        _score = _traySnapshot.score;
+        OnScoreChanged?.Invoke(_score, 0, null);
+    }
+
+    /// <summary>Kayıt: düz dizi (sıra: y=0..rows-1, x=0..columns-1 → idx = y * columns + x).</summary>
+    public void BuildFlatGridStateForSave(out bool[] occupied, out Color[] colors)
+    {
+        int n = columns * rows;
+        occupied = new bool[n];
+        colors = new Color[n];
+        if (gridArray == null)
+            return;
+
+        int idx = 0;
+        for (int y = 0; y < rows; y++)
+        {
+            for (int x = 0; x < columns; x++)
+            {
+                var cell = gridArray[x, y];
+                if (cell != null && cell.IsOccupied)
+                {
+                    occupied[idx] = true;
+                    colors[idx] = cell.PlacedColor;
+                }
+                else
+                {
+                    occupied[idx] = false;
+                    colors[idx] = default;
+                }
+
+                idx++;
+            }
+        }
+    }
+
+    /// <summary>Kayıt yükleme: mevcut ızgarayı temizleyip düz diziden blokları yeniden kurar.</summary>
+    public bool ApplyGridStateFromSave(int saveColumns, int saveRows, bool[] occupied, Color[] colors)
+    {
+        if (gridArray == null)
+            return false;
+
+        int n = columns * rows;
+        if (saveColumns != columns || saveRows != rows || occupied == null || colors == null)
+            return false;
+        if (occupied.Length != n || colors.Length != n)
+            return false;
+
+        if (_cascadeRoutine != null)
+        {
+            StopCoroutine(_cascadeRoutine);
+            _cascadeRoutine = null;
+        }
+
+        _isResolvingMatches = false;
+        ClearPreview();
+
+        EnsurePlacedBlocksRoot();
+
+        if (_placedBlocksRoot != null)
+        {
+            for (int i = _placedBlocksRoot.childCount - 1; i >= 0; i--)
+            {
+                var child = _placedBlocksRoot.GetChild(i);
+                if (child != null)
+                {
+                    child.DOKill();
+                    Destroy(child.gameObject);
+                }
+            }
+        }
+
+        for (int y = 0; y < rows; y++)
+        {
+            for (int x = 0; x < columns; x++)
+            {
+                var cell = gridArray[x, y];
+                if (cell != null)
+                    cell.ClearPlacedBlock();
+            }
+        }
+
+        var blockPrefab = ResolveBlockPrefabForRestore();
+        if (blockPrefab == null)
+            return false;
+
+        int idx = 0;
+        for (int y = 0; y < rows; y++)
+        {
+            for (int x = 0; x < columns; x++)
+            {
+                if (!occupied[idx])
+                {
+                    idx++;
+                    continue;
+                }
+
+                var cell = gridArray[x, y];
+                if (cell == null)
+                {
+                    idx++;
+                    continue;
+                }
+
+                var c = colors[idx];
+                var go = Instantiate(blockPrefab, _placedBlocksRoot);
+                go.name = $"SaveBlock_{x}_{y}";
+
+                if (go.TryGetComponent<SpriteRenderer>(out var sr))
+                    sr.color = c;
+
+                NormalizePlacedBlockScale(go.transform);
+                PerfectMagnetSnap(go.transform, cell.transform);
+                cell.SetPlacedBlock(go.transform, c);
+                idx++;
+            }
+        }
+
+        return true;
+    }
+
+    /// <summary>Kayıt sonrası skor + kombo (HUD senkronu için OnScoreChanged, ek puan 0).</summary>
+    public void SetScoreAndComboForLoad(int score, int comboMultiplier)
+    {
+        _score = Mathf.Max(0, score);
+        _comboMultiplier = Mathf.Max(0, comboMultiplier);
+        OnScoreChanged?.Invoke(_score, 0, null);
+    }
+
+    GameObject ResolveBlockPrefabForRestore()
+    {
+        if (_shapeSpawner == null)
+            _shapeSpawner = FindAnyObjectByType<ShapeSpawner>();
+        return _shapeSpawner != null ? _shapeSpawner.SharedBlockPrefab : null;
     }
 
     void StartResolve2x2Cascade()
@@ -629,7 +1001,7 @@ public sealed class GridManager : MonoBehaviour
 
         _comboMultiplier = 1;
         _isResolvingMatches = true;
-        StartCoroutine(Resolve2x2CascadeRoutine());
+        _cascadeRoutine = StartCoroutine(Resolve2x2CascadeRoutine());
     }
 
     System.Collections.IEnumerator Resolve2x2CascadeRoutine()
@@ -648,21 +1020,28 @@ public sealed class GridManager : MonoBehaviour
 
             var basePoints = clearedCount * 10;
             var points = basePoints * _comboMultiplier * (isCombo ? 3 : 1);
-            AddScore(points);
+            AddScore(points, fxCenter);
 
             if (cameraManager == null)
                 cameraManager = FindAnyObjectByType<CameraManager>();
             cameraManager?.ShakeStrong();
-            SpawnFloatingWorldScore(fxCenter, points);
+            HapticManager.Instance?.HeavyVibration();
+            if (AudioManager.Instance != null)
+                AudioManager.Instance.PlaySFX(AudioManager.Instance.clearClip);
+
+            var sm = ScoreManager.Instance != null ? ScoreManager.Instance : FindAnyObjectByType<ScoreManager>();
+            if (sm == null || !sm.HasGhostConfigured)
+                SpawnFloatingWorldScore(fxCenter, points);
 
             _comboMultiplier++;
 
             // Animasyonların görünmesi için kısa bekleme (scale tween 0.2s)
-            yield return new WaitForSeconds(0.22f);
+            yield return new WaitForSeconds(clearShrinkDuration + 0.02f);
         }
 
         _comboMultiplier = 0;
         _isResolvingMatches = false;
+        _cascadeRoutine = null;
         OnBoardSettled?.Invoke();
     }
 
@@ -671,7 +1050,22 @@ public sealed class GridManager : MonoBehaviour
         toClear = new HashSet<GridCell>();
         isCombo = false;
 
-        if (gridArray == null) return false;
+        if (gridArray == null)
+            return false;
+
+        var occupied = new bool[columns, rows];
+        var colors = new Color[columns, rows];
+        CaptureGridState(occupied, colors);
+        return TryBuild2x2ClearSetFromState(occupied, colors, out toClear, out isCombo);
+    }
+
+    bool TryBuild2x2ClearSetFromState(bool[,] occupied, Color[,] colors, out HashSet<GridCell> toClear, out bool isCombo)
+    {
+        toClear = new HashSet<GridCell>();
+        isCombo = false;
+
+        if (gridArray == null)
+            return false;
 
         // 2x2 eşleşmelerin sol-alt köşeleri
         var matches = new List<(int x, int y)>();
@@ -679,17 +1073,13 @@ public sealed class GridManager : MonoBehaviour
         {
             for (int x = 0; x < columns - 1; x++)
             {
-                var a = gridArray[x, y];
-                var b = gridArray[x + 1, y];
-                var c = gridArray[x, y + 1];
-                var d = gridArray[x + 1, y + 1];
+                if (!occupied[x, y] || !occupied[x + 1, y] || !occupied[x, y + 1] || !occupied[x + 1, y + 1])
+                    continue;
 
-                if (a == null || b == null || c == null || d == null) continue;
-                if (!a.IsOccupied || !b.IsOccupied || !c.IsOccupied || !d.IsOccupied) continue;
-
-                if (SameColor(a.PlacedColor, b.PlacedColor) &&
-                    SameColor(a.PlacedColor, c.PlacedColor) &&
-                    SameColor(a.PlacedColor, d.PlacedColor))
+                var a = colors[x, y];
+                if (SameColor(a, colors[x + 1, y]) &&
+                    SameColor(a, colors[x, y + 1]) &&
+                    SameColor(a, colors[x + 1, y + 1]))
                 {
                     matches.Add((x, y));
                 }
@@ -700,8 +1090,6 @@ public sealed class GridManager : MonoBehaviour
             return false;
 
         // Shockwave: 2x2'yi her yönden 1 hücre saracak şekilde 4x4 bounding box.
-        // startX = minX - 1, endX = minX + 2 (inclusive)
-        // startY = minY - 1, endY = minY + 2 (inclusive)
         for (int i = 0; i < matches.Count; i++)
         {
             var (mx, my) = matches[i];
@@ -714,7 +1102,6 @@ public sealed class GridManager : MonoBehaviour
             {
                 for (int xx = startX; xx <= endX; xx++)
                 {
-                    // Köşeleri (diagonalleri) es geç: kalın '+' etkisi
                     if ((xx == mx - 1 && yy == my - 1) ||
                         (xx == mx - 1 && yy == my + 2) ||
                         (xx == mx + 2 && yy == my - 1) ||
@@ -726,14 +1113,16 @@ public sealed class GridManager : MonoBehaviour
                     if (xx < 0 || xx >= columns || yy < 0 || yy >= rows)
                         continue;
 
+                    if (!occupied[xx, yy])
+                        continue;
+
                     var cell = gridArray[xx, yy];
-                    if (cell != null && cell.IsOccupied)
+                    if (cell != null)
                         toClear.Add(cell);
                 }
             }
         }
 
-        // Combo (>=2 match): + lazer (+) ile satır/sütun temizle
         isCombo = matches.Count >= 2;
         if (isCombo)
         {
@@ -747,11 +1136,16 @@ public sealed class GridManager : MonoBehaviour
                 for (int r = 0; r < rowsToClear.Length; r++)
                 {
                     var yy = rowsToClear[r];
-                    if (yy < 0 || yy >= rows) continue;
+                    if (yy < 0 || yy >= rows)
+                        continue;
+
                     for (int xx = 0; xx < columns; xx++)
                     {
+                        if (!occupied[xx, yy])
+                            continue;
+
                         var cell = gridArray[xx, yy];
-                        if (cell != null && cell.IsOccupied)
+                        if (cell != null)
                             toClear.Add(cell);
                     }
                 }
@@ -759,11 +1153,16 @@ public sealed class GridManager : MonoBehaviour
                 for (int cIdx = 0; cIdx < colsToClear.Length; cIdx++)
                 {
                     var xx = colsToClear[cIdx];
-                    if (xx < 0 || xx >= columns) continue;
+                    if (xx < 0 || xx >= columns)
+                        continue;
+
                     for (int yy = 0; yy < rows; yy++)
                     {
+                        if (!occupied[xx, yy])
+                            continue;
+
                         var cell = gridArray[xx, yy];
-                        if (cell != null && cell.IsOccupied)
+                        if (cell != null)
                             toClear.Add(cell);
                     }
                 }
@@ -779,28 +1178,33 @@ public sealed class GridManager : MonoBehaviour
         foreach (var cell in cells)
         {
             if (cell == null) continue;
+
+            var blockedColor = cell.PlacedColor;
+
             var block = cell.ClearPlacedBlock();
             if (block == null) continue;
 
             cleared++;
 
             block.DOKill();
-            var sr = block.GetComponent<SpriteRenderer>();
+            block.DOScale(Vector3.zero, clearShrinkDuration)
+                .SetEase(Ease.InBack)
+                .SetUpdate(true)
+                .OnComplete(() =>
+                {
+                    if (block == null)
+                        return;
 
-            var seq = DOTween.Sequence();
-            if (sr != null)
-            {
-                // "parlayarak" hissi: hızlı beyaza çek, sonra alpha düşür
-                seq.Join(sr.DOColor(Color.white, 0.08f));
-                seq.Join(sr.DOFade(0f, 0.2f));
-            }
+                    if (blastParticlePrefab != null)
+                    {
+                        var newBlast = Instantiate(blastParticlePrefab, block.position, Quaternion.identity);
+                        var mainModule = newBlast.main;
+                        mainModule.startColor = blockedColor;
+                        Destroy(newBlast.gameObject, newBlast.main.duration);
+                    }
 
-            seq.Join(block.DOScale(Vector3.zero, 0.2f).SetEase(Ease.InBack));
-            seq.OnComplete(() =>
-            {
-                if (block != null)
                     Destroy(block.gameObject);
-            });
+                });
         }
 
         return cleared;

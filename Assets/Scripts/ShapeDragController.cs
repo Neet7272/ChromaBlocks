@@ -67,20 +67,35 @@ public sealed class ShapeDragController : MonoBehaviour, IPointerDownHandler, ID
         return shapeSpawner != null && shapeSpawner.IsGameOver;
     }
 
+    bool IsLockedByBoardBusy()
+    {
+        return gridManager != null && gridManager.IsResolvingMatches;
+    }
+
+    bool IsInputLocked()
+    {
+        return IsLockedByGameOver() || IsLockedByBoardBusy();
+    }
+
     void Start()
     {
         // Spawner Instantiate sonrası scale ayarlayacağı için, spawn değerlerini Start'ta yakalıyoruz.
         _spawnWorldPos = transform.position;
-        _spawnLocalScale = transform.localScale;
+        _spawnLocalScale = shapeSpawner != null
+            ? shapeSpawner.TrayRestingLocalScale
+            : transform.localScale;
         _spawnZ = transform.position.z;
-        UpdateColliderBounds();
+
+        // Spawn intro scale=0 iken bounds hesaplanırsa collider sıfır kalır; raycast çalışmaz.
+        if (transform.localScale.sqrMagnitude > 0.0001f)
+            UpdateColliderBounds();
 
         CacheRenderers();
     }
 
     public void OnPointerDown(PointerEventData eventData)
     {
-        if (IsLockedByGameOver())
+        if (IsInputLocked())
             return;
 
         StopReturn();
@@ -116,7 +131,7 @@ public sealed class ShapeDragController : MonoBehaviour, IPointerDownHandler, ID
 
     public void OnDrag(PointerEventData eventData)
     {
-        if (IsLockedByGameOver())
+        if (IsInputLocked())
             return;
 
         StopReturn();
@@ -141,7 +156,7 @@ public sealed class ShapeDragController : MonoBehaviour, IPointerDownHandler, ID
 
     public void OnPointerUp(PointerEventData eventData)
     {
-        if (IsLockedByGameOver())
+        if (IsInputLocked())
             return;
 
         StopReturn();

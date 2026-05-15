@@ -46,13 +46,22 @@ public sealed class Shape : MonoBehaviour
     /// <summary>0..3 = 0°, 90°, 180°, 270° CCW around board center (şekil verisi, transform dönmüyor).</summary>
     int _rotationQuarters;
 
-    public void Init(ShapeData data, GameObject blockPrefabOverride, float spacingOverride, RolePalette palette)
+    /// <summary>Kayıt: mevcut mantıksal dönüş.</summary>
+    public int RotationQuarters => _rotationQuarters;
+
+    public RolePalette CurrentPalette => _palette;
+
+    int? _forcedRotationQuarters;
+
+    public void Init(ShapeData data, GameObject blockPrefabOverride, float spacingOverride, RolePalette palette, int? rotationQuartersOverride = null)
     {
         shapeData = data;
         blockPrefab = blockPrefabOverride != null ? blockPrefabOverride : blockPrefab;
         spacing = Mathf.Max(0f, spacingOverride);
         _palette = palette;
+        _forcedRotationQuarters = rotationQuartersOverride;
         Rebuild();
+        _forcedRotationQuarters = null;
     }
 
     public void SetData(ShapeData data)
@@ -85,7 +94,9 @@ public sealed class Shape : MonoBehaviour
         // Kök dönmesin; gölgeler bozulmasın. Mantıksal dönüş sadece hücre koordinatlarında.
         transform.localRotation = Quaternion.identity;
 
-        if (Application.isPlaying)
+        if (_forcedRotationQuarters.HasValue)
+            _rotationQuarters = (_forcedRotationQuarters.Value % 4 + 4) % 4;
+        else if (Application.isPlaying)
             _rotationQuarters = Random.Range(0, 4);
         else
             _rotationQuarters = 0;
@@ -169,6 +180,9 @@ public sealed class Shape : MonoBehaviour
     }
 
     public IReadOnlyList<BlockInstance> Blocks => _blocks;
+
+    /// <summary>Şekildeki kare (blok) sayısı — yerleştirme puanı için.</summary>
+    public int GetTileCount() => _blocks.Count;
 
     public bool TryGetBlockPrefabWorldSize(out Vector2 size)
     {

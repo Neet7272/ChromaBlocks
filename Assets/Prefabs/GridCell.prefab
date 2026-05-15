@@ -109,3 +109,4 @@ MonoBehaviour:
   isOccupied: 0
   previewColor: {r: 1, g: 1, b: 1, a: 0.2509804}
   occupiedTint: {r: 0.050980393, g: 0.23529412, b: 0.7058824, a: 0.78431374}
+  predictiveClearColor: {r: 0.37647066, g: 0.8643403, b: 0.89411765, a: 1}

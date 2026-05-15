@@ -1,7 +1,9 @@
 using System.Collections;
 using System.Collections.Generic;
 using UnityEngine;
+using DG.Tweening;
 
+[DefaultExecutionOrder(200)]
 public sealed class ShapeSpawner : MonoBehaviour
 {
     [Header("Core")]
@@ -19,6 +21,9 @@ public sealed class ShapeSpawner : MonoBehaviour
     [SerializeField] Shape shapePrefab;
     [SerializeField] GameObject blockPrefab;
 
+    public GameObject SharedBlockPrefab => blockPrefab;
+    public Vector3 TrayRestingLocalScale => spawnLocalScale;
+
     [Header("Layout")]
     [SerializeField, Min(0f)] float shapeSpacing = 0f;
 
@@ -29,8 +34,15 @@ public sealed class ShapeSpawner : MonoBehaviour
     [Header("Spawn Scale (Bottom Area)")]
     [SerializeField] Vector3 spawnLocalScale = new Vector3(0.6f, 0.6f, 1f);
 
+    [Header("Tepsi Giriş Animasyonu")]
+    [SerializeField, Min(0f)] float traySpawnStagger = 0.1f;
+    [SerializeField, Min(0.05f)] float traySpawnScaleDuration = 0.4f;
+
     [Header("Refill")]
     [SerializeField] bool autoRefillWhenEmpty = true;
+
+    [Header("Game Over")]
+    [SerializeField] GameOverManager gameOverManager;
 
     bool _isGameOver;
     public bool IsGameOver => _isGameOver;
@@ -48,6 +60,8 @@ public sealed class ShapeSpawner : MonoBehaviour
     {
         if (gridManager == null)
             gridManager = FindAnyObjectByType<GridManager>();
+        if (gameOverManager == null)
+            gameOverManager = FindAnyObjectByType<GameOverManager>(FindObjectsInactive.Include);
     }
 
     void OnEnable()
@@ -86,6 +100,12 @@ public sealed class ShapeSpawner : MonoBehaviour
 
     IEnumerator DeferredCheckMovesAfterSettle()
     {
+        if (gridManager != null)
+        {
+            while (gridManager.IsResolvingMatches)
+                yield return null;
+        }
+
         yield return null;
 
         _deferredSettleCheck = null;
@@ -101,13 +121,164 @@ public sealed class ShapeSpawner : MonoBehaviour
             EnterGameOver();
     }
 
+    /// <summary>Yerleştirme veya yeni şekil spawn'ından sonra hamle kontrolü planla.</summary>
+    public void ScheduleMoveAvailabilityCheck()
+    {
+        if (_isGameOver)
+            return;
+
+        if (_deferredSettleCheck != null)
+            StopCoroutine(_deferredSettleCheck);
+        _deferredSettleCheck = StartCoroutine(DeferredCheckMovesAfterSettle());
+    }
+
+    /// <summary>GridManager şekli yerleştirmeden önce spawner slotunu temizler.</summary>
+    public void NotifyShapeConsumed(Shape shape)
+    {
+        if (shape == null)
+            return;
+
+        if (_left == shape) _left = null;
+        else if (_middle == shape) _middle = null;
+        else if (_right == shape) _right = null;
+    }
+
     void EnterGameOver()
     {
         if (_isGameOver)
             return;
         _isGameOver = true;
         Debug.Log("GAME OVER - YER KALMADI!");
+
+        if (gameOverManager != null)
+            gameOverManager.EnterGameOver();
+        else
+            Debug.LogError("[ShapeSpawner] GameOverManager bulunamadı — panel açılamıyor.", this);
+
         GameOverStarted?.Invoke();
+    }
+
+    public void ClearGameOverState()
+    {
+        _isGameOver = false;
+    }
+
+    public void DestroyCurrentShapes()
+    {
+        DespawnAll();
+    }
+
+    /// <summary>Revive: son tepsi hamlelerini geri sar, yeni 3 şekil ver.</summary>
+    public void ReviveTray()
+    {
+        if (_deferredSettleCheck != null)
+        {
+            StopCoroutine(_deferredSettleCheck);
+            _deferredSettleCheck = null;
+        }
+
+        if (gridManager != null)
+            gridManager.RestoreTraySnapshot();
+
+        DespawnAll();
+        SpawnNewShapes();
+    }
+
+    void CaptureTraySnapshot()
+    {
+        if (gridManager != null)
+            gridManager.CaptureTraySnapshot();
+    }
+
+    public void SpawnNewShapes()
+    {
+        if (shapePrefab == null || blockPrefab == null || shapePool == null || shapePool.Count == 0)
+            return;
+
+        if (leftSpawnPoint == null || middleSpawnPoint == null || rightSpawnPoint == null)
+            return;
+
+        DespawnAll();
+
+        _left = SpawnAt(leftSpawnPoint, GetRandomShapeData());
+        _middle = SpawnAt(middleSpawnPoint, GetRandomShapeData());
+        _right = SpawnAt(rightSpawnPoint, GetRandomShapeData());
+
+        PlayTraySpawnIntro(_left, _middle, _right);
+
+        CaptureTraySnapshot();
+        ScheduleMoveAvailabilityCheck();
+    }
+
+    /// <summary>0 = sol, 1 = orta, 2 = sağ — SaveManager için.</summary>
+    public TraySlotSave ExportTraySlot(int index)
+    {
+        var s = index switch
+        {
+            0 => _left,
+            1 => _middle,
+            2 => _right,
+            _ => null
+        };
+
+        return ExportTraySlotFromShape(s);
+    }
+
+    static TraySlotSave ExportTraySlotFromShape(Shape s)
+    {
+        if (s == null || s.Data == null)
+            return new TraySlotSave { empty = true };
+
+        var p = s.CurrentPalette;
+        return new TraySlotSave
+        {
+            empty = false,
+            shapeName = s.Data.ShapeName,
+            rotationQuarters = s.RotationQuarters,
+            primary = p.Primary,
+            secondary = p.Secondary,
+            tertiary = p.Tertiary
+        };
+    }
+
+    /// <summary>Kayıt dosyasından tepsiyi yeniden kurar (animasyonsuz).</summary>
+    public bool RestoreTrayFromSave(TraySlotSave[] slots)
+    {
+        if (slots == null || slots.Length != 3)
+            return false;
+
+        if (shapePrefab == null || blockPrefab == null || shapePool == null || shapePool.Count == 0)
+            return false;
+
+        if (leftSpawnPoint == null || middleSpawnPoint == null || rightSpawnPoint == null)
+            return false;
+
+        DespawnAll();
+
+        _left = SpawnAtFromSaveSlot(leftSpawnPoint, slots[0]);
+        _middle = SpawnAtFromSaveSlot(middleSpawnPoint, slots[1]);
+        _right = SpawnAtFromSaveSlot(rightSpawnPoint, slots[2]);
+
+        FinalizeInstantTrayVisuals(_left, _middle, _right);
+
+        CaptureTraySnapshot();
+        ScheduleMoveAvailabilityCheck();
+        return true;
+    }
+
+    public ShapeData FindShapeDataByName(string shapeName)
+    {
+        if (string.IsNullOrEmpty(shapeName) || shapePool == null)
+            return null;
+
+        for (int i = 0; i < shapePool.Count; i++)
+        {
+            var d = shapePool[i];
+            if (d != null && d.ShapeName == shapeName)
+                return d;
+        }
+
+        return null;
     }
 
     public List<Shape> GetActiveShapes()
@@ -121,6 +292,9 @@ public sealed class ShapeSpawner : MonoBehaviour
 
     void Start()
     {
+        if (SaveManager.ConsumeRestoredFromSaveFlag())
+            return;
+
         SpawnInitialThree();
     }
 
@@ -135,9 +309,10 @@ public sealed class ShapeSpawner : MonoBehaviour
         if (gridManager != null && gridManager.IsResolvingMatches)
             return;
 
-        // Unity'de Destroy edilen objeler == null olur.
-        if (_left == null && _middle == null && _right == null)
-            SpawnInitialThree();
+        if (_left != null || _middle != null || _right != null)
+            return;
+
+        SpawnInitialThree();
     }
 
     public void SpawnInitialThree()
@@ -174,9 +349,40 @@ public sealed class ShapeSpawner : MonoBehaviour
         _left = SpawnAt(leftSpawnPoint, GetRandomShapeData());
         _middle = SpawnAt(middleSpawnPoint, GetRandomShapeData());
         _right = SpawnAt(rightSpawnPoint, GetRandomShapeData());
+
+        PlayTraySpawnIntro(_left, _middle, _right);
+
+        CaptureTraySnapshot();
+        ScheduleMoveAvailabilityCheck();
     }
 
     Shape SpawnAt(Transform point, ShapeData data)
+    {
+        return SpawnAtInternal(point, data, false, default, null, playIntro: true);
+    }
+
+    Shape SpawnAtFromSaveSlot(Transform point, TraySlotSave slot)
+    {
+        if (slot.empty)
+            return null;
+
+        var data = FindShapeDataByName(slot.shapeName);
+        if (data == null || !data.HasAnyBlocks())
+            return null;
+
+        var palette = new Shape.RolePalette
+        {
+            Primary = slot.primary,
+            Secondary = slot.secondary,
+            Tertiary = slot.tertiary
+        };
+
+        int rot = (slot.rotationQuarters % 4 + 4) % 4;
+        return SpawnAtInternal(point, data, true, palette, rot, playIntro: false);
+    }
+
+    /// <summary>forcedPalette yalnızca useForcedPalette true iken kullanılır.</summary>
+    Shape SpawnAtInternal(Transform point, ShapeData data, bool useForcedPalette, Shape.RolePalette forcedPalette, int? rotationQuarters, bool playIntro)
     {
         if (data == null || !data.HasAnyBlocks())
         {
@@ -185,20 +391,63 @@ public sealed class ShapeSpawner : MonoBehaviour
         }
 
         var shape = Instantiate(shapePrefab, point.position, point.rotation, point);
-        shape.name = $"Shape_{(data != null ? data.ShapeName : "Unknown")}";
+        shape.name = $"Shape_{data.ShapeName}";
 
-        // Alt alana sığması için küçük doğsun.
         shape.transform.localScale = spawnLocalScale;
 
-        // Her spawn öncesi rastgele bir "rol paleti" üret.
-        var palette = CreateRandomPalette();
+        var palette = useForcedPalette ? forcedPalette : CreateRandomPalette();
+        shape.Init(data, blockPrefab, shapeSpacing, palette, rotationQuarters);
 
-        // Spawner tek yerden yönetebilsin diye blockPrefab + spacing + palette'i buradan geçiriyoruz.
-        shape.Init(data, blockPrefab, shapeSpacing, palette);
+        if (playIntro)
+            shape.transform.localScale = Vector3.zero;
+        else
+        {
+            shape.transform.localScale = spawnLocalScale;
+            if (shape.TryGetComponent<ShapeDragController>(out var drag))
+                drag.UpdateColliderBounds();
+        }
 
-        // Şekil parent'ında ortalı olduğu için ek bir offset gerekmiyor.
-        // İleride şekiller arası mesafe istersen spawnPoint'leri ayırman yeterli.
         return shape;
+    }
+
+    static void FinalizeInstantTrayVisuals(Shape a, Shape b, Shape c)
+    {
+        FinalizeOne(a);
+        FinalizeOne(b);
+        FinalizeOne(c);
+    }
+
+    static void FinalizeOne(Shape shape)
+    {
+        if (shape == null)
+            return;
+
+        shape.transform.DOKill();
+        if (shape.TryGetComponent<ShapeDragController>(out var drag))
+            drag.UpdateColliderBounds();
+    }
+
+    void PlayTraySpawnIntro(params Shape[] shapes)
+    {
+        for (int i = 0; i < shapes.Length; i++)
+        {
+            var shape = shapes[i];
+            if (shape == null)
+                continue;
+
+            var t = shape.transform;
+            t.DOKill();
+            t.localScale = Vector3.zero;
+            t.DOScale(spawnLocalScale, traySpawnScaleDuration)
+                .SetEase(Ease.OutBack)
+                .SetDelay(i * traySpawnStagger)
+                .SetUpdate(true)
+                .OnComplete(() =>
+                {
+                    if (shape != null && shape.TryGetComponent<ShapeDragController>(out var drag))
+                        drag.UpdateColliderBounds();
+                });
+        }
     }
 
     Shape.RolePalette CreateRandomPalette()
@@ -267,10 +516,20 @@ public sealed class ShapeSpawner : MonoBehaviour
 
     void DespawnAll()
     {
+        KillShapeTween(_left);
+        KillShapeTween(_middle);
+        KillShapeTween(_right);
+
         if (_left != null) Destroy(_left.gameObject);
         if (_middle != null) Destroy(_middle.gameObject);
         if (_right != null) Destroy(_right.gameObject);
         _left = _middle = _right = null;
+    }
+
+    static void KillShapeTween(Shape shape)
+    {
+        if (shape != null)
+            shape.transform.DOKill();
     }
 }
 
