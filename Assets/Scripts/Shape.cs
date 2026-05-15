@@ -12,6 +12,8 @@ public sealed class Shape : MonoBehaviour
 
     readonly List<Transform> _spawnedBlocks = new();
     readonly List<BlockInstance> _blocks = new();
+    readonly List<Vector3> _blockLayoutLocalPositions = new();
+    readonly List<Vector3> _blockLayoutLocalScales = new();
     Transform _anchorBlock;
 
     [Header("Logic (Game Over / simülasyon)")]
@@ -150,6 +152,11 @@ public sealed class Shape : MonoBehaviour
             go.name = $"Block_r{_rotationQuarters * 90}_{rx}_{ry}_{role}";
             go.transform.localPosition = new Vector3(localPos.x, localPos.y, 0f);
             go.transform.localRotation = Quaternion.identity;
+            go.transform.localScale = Vector3.one;
+
+            // Blok prefab'ında yanlışlıkla kalmış drag script'i çocuğu parmağa kilitlemesin.
+            if (go.TryGetComponent<ShapeDragController>(out var strayDrag))
+                Destroy(strayDrag);
 
             var color = ResolveRoleColor(role);
             if (go.TryGetComponent<SpriteRenderer>(out var sr))
@@ -158,6 +165,8 @@ public sealed class Shape : MonoBehaviour
             _spawnedBlocks.Add(go.transform);
             var offset = new Vector2Int(rx - min.x, ry - min.y);
             _blocks.Add(new BlockInstance(go.transform, offset, color));
+            _blockLayoutLocalPositions.Add(go.transform.localPosition);
+            _blockLayoutLocalScales.Add(go.transform.localScale);
             if (offset == Vector2Int.zero)
                 _anchorBlock = go.transform;
         }
@@ -180,6 +189,23 @@ public sealed class Shape : MonoBehaviour
     }
 
     public IReadOnlyList<BlockInstance> Blocks => _blocks;
+
+    /// <summary>Sürükleme / ölçek tween sonrası çocuk blokları Rebuild düzenine geri sarar.</summary>
+    public void RestoreBlockLayoutTransforms()
+    {
+        var n = Mathf.Min(_blocks.Count, _blockLayoutLocalPositions.Count);
+        for (int i = 0; i < n; i++)
+        {
+            var t = _blocks[i].Transform;
+            if (t == null)
+                continue;
+
+            t.localPosition = _blockLayoutLocalPositions[i];
+            t.localScale = i < _blockLayoutLocalScales.Count
+                ? _blockLayoutLocalScales[i]
+                : Vector3.one;
+        }
+    }
 
     /// <summary>Şekildeki kare (blok) sayısı — yerleştirme puanı için.</summary>
     public int GetTileCount() => _blocks.Count;
@@ -236,6 +262,8 @@ public sealed class Shape : MonoBehaviour
         }
         _spawnedBlocks.Clear();
         _blocks.Clear();
+        _blockLayoutLocalPositions.Clear();
+        _blockLayoutLocalScales.Clear();
         _anchorBlock = null;
         logicalBlocks.Clear();
     }

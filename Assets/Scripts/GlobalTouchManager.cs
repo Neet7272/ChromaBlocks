@@ -2,6 +2,7 @@ using System.Collections.Generic;
 using UnityEngine;
 using UnityEngine.EventSystems;
 using UnityEngine.InputSystem;
+using UnityEngine.SceneManagement;
 using UnityEngine.UI;
 
 /// <summary>
@@ -14,10 +15,22 @@ public sealed class GlobalTouchManager : MonoBehaviour
 
     [Header("Partikül")]
     [SerializeField] ParticleSystem touchParticlePrefab;
-    [SerializeField, Tooltip("Dünya spawn için; boşsa Camera.main.")]
+    [SerializeField, Tooltip("Dünya spawn için; boşsa bir kez Camera.main cache'lenir.")]
     Camera worldCamera;
     [SerializeField, Tooltip("Screen Space - Camera: ScreenToWorldPoint için z (dünya spawn; UI için RectTransformUtility kullanılır).")]
     float screenToWorldPlaneZ = 5f;
+    [SerializeField, Min(1)] int touchPoolPrewarm = 8;
+
+    ParticleSystemPool _touchParticlePool;
+    Camera _cachedFallbackCamera;
+
+    GraphicRaycaster[] _graphicRaycasters = System.Array.Empty<GraphicRaycaster>();
+    readonly List<Canvas> _uiRootCanvases = new();
+
+    PointerEventData _pointerEventData;
+    EventSystem _pointerEventDataOwner;
+    readonly List<RaycastResult> _raycastCombined = new();
+    readonly List<RaycastResult> _raycastChunk = new();
 
     void Awake()
     {
@@ -29,12 +42,81 @@ public sealed class GlobalTouchManager : MonoBehaviour
 
         Instance = this;
         DontDestroyOnLoad(gameObject);
+        EnsureTouchParticlePool();
+        CacheFallbackCamera();
+    }
+
+    void OnEnable()
+    {
+        SceneManager.sceneLoaded += OnSceneLoaded;
+        RefreshUiRaycastCache();
+    }
+
+    void OnDisable()
+    {
+        SceneManager.sceneLoaded -= OnSceneLoaded;
     }
 
     void OnDestroy()
     {
         if (Instance == this)
             Instance = null;
+    }
+
+    void OnSceneLoaded(Scene scene, LoadSceneMode mode)
+    {
+        RefreshUiRaycastCache();
+        CacheFallbackCamera();
+    }
+
+    void CacheFallbackCamera()
+    {
+        _cachedFallbackCamera = worldCamera != null ? worldCamera : Camera.main;
+    }
+
+    Camera GetWorldCamera()
+    {
+        if (worldCamera != null)
+            return worldCamera;
+
+        if (_cachedFallbackCamera == null)
+            CacheFallbackCamera();
+
+        return _cachedFallbackCamera;
+    }
+
+    /// <summary>Sahnedeki GraphicRaycaster ve kök UI canvas listesini yeniler.</summary>
+    void RefreshUiRaycastCache()
+    {
+        _graphicRaycasters = FindObjectsByType<GraphicRaycaster>(FindObjectsInactive.Exclude);
+
+        _uiRootCanvases.Clear();
+        var allCanvases = FindObjectsByType<Canvas>(FindObjectsInactive.Exclude);
+        for (int i = 0; i < allCanvases.Length; i++)
+        {
+            var c = allCanvases[i];
+            if (c == null || !c.isRootCanvas || !c.enabled || !c.gameObject.activeInHierarchy)
+                continue;
+            if (c.renderMode != RenderMode.ScreenSpaceOverlay &&
+                c.renderMode != RenderMode.ScreenSpaceCamera)
+                continue;
+
+            _uiRootCanvases.Add(c);
+        }
+    }
+
+    void EnsureTouchParticlePool()
+    {
+        if (touchParticlePrefab == null)
+            return;
+
+        if (_touchParticlePool == null)
+            _touchParticlePool = GetComponent<ParticleSystemPool>();
+
+        if (_touchParticlePool == null)
+            _touchParticlePool = gameObject.AddComponent<ParticleSystemPool>();
+
+        _touchParticlePool.Initialize(touchParticlePrefab, touchPoolPrewarm, transform);
     }
 
     void Update()
@@ -45,7 +127,7 @@ public sealed class GlobalTouchManager : MonoBehaviour
         if (!TryGetPointerDown(out var screen, out var pointerId))
             return;
 
-        var wCam = worldCamera != null ? worldCamera : Camera.main;
+        var wCam = GetWorldCamera();
         if (wCam != null && RayHitsDraggableShape(wCam, screen))
             return;
 
@@ -123,38 +205,51 @@ public sealed class GlobalTouchManager : MonoBehaviour
         return hit.collider.GetComponentInParent<ShapeDragController>() != null;
     }
 
-    static bool TryGraphicRaycastUi(Vector2 screen, int pointerId, out Canvas rootCanvas)
+    void EnsurePointerEventData(EventSystem es)
+    {
+        if (_pointerEventData == null || _pointerEventDataOwner != es)
+        {
+            _pointerEventData = new PointerEventData(es);
+            _pointerEventDataOwner = es;
+        }
+    }
+
+    bool TryGraphicRaycastUi(Vector2 screen, int pointerId, out Canvas rootCanvas)
     {
         rootCanvas = null;
         var es = EventSystem.current;
         if (es == null)
             return false;
 
-        var ped = new PointerEventData(es)
-        {
-            position = screen,
-            displayIndex = 0,
-            pointerId = pointerId
-        };
+        if (_graphicRaycasters == null || _graphicRaycasters.Length == 0)
+            RefreshUiRaycastCache();
 
-        var combined = new List<RaycastResult>();
-        foreach (var gr in FindObjectsByType<GraphicRaycaster>(FindObjectsInactive.Exclude))
+        EnsurePointerEventData(es);
+        _pointerEventData.position = screen;
+        _pointerEventData.pointerId = pointerId;
+        _pointerEventData.displayIndex = 0;
+
+        _raycastCombined.Clear();
+        for (int i = 0; i < _graphicRaycasters.Length; i++)
         {
+            var gr = _graphicRaycasters[i];
             if (gr == null || !gr.isActiveAndEnabled)
                 continue;
-            var chunk = new List<RaycastResult>();
-            gr.Raycast(ped, chunk);
-            combined.AddRange(chunk);
+
+            _raycastChunk.Clear();
+            gr.Raycast(_pointerEventData, _raycastChunk);
+            if (_raycastChunk.Count > 0)
+                _raycastCombined.AddRange(_raycastChunk);
         }
 
-        if (combined.Count == 0)
+        if (_raycastCombined.Count == 0)
             return false;
 
-        var top = combined[0];
-        for (var i = 1; i < combined.Count; i++)
+        var top = _raycastCombined[0];
+        for (var i = 1; i < _raycastCombined.Count; i++)
         {
-            if (IsRaycastMoreInFront(combined[i], top))
-                top = combined[i];
+            if (IsRaycastMoreInFront(_raycastCombined[i], top))
+                top = _raycastCombined[i];
         }
 
         rootCanvas = top.gameObject.GetComponentInParent<Canvas>()?.rootCanvas;
@@ -172,14 +267,8 @@ public sealed class GlobalTouchManager : MonoBehaviour
 
     void SpawnParticleAtWorldRoot(Vector3 spawnPos)
     {
-        var newFeedback = Instantiate(touchParticlePrefab, spawnPos, Quaternion.identity);
-        newFeedback.transform.SetParent(null);
-        newFeedback.transform.localScale = Vector3.one;
-
-        var main = newFeedback.main;
-        main.simulationSpace = ParticleSystemSimulationSpace.World;
-        newFeedback.Play();
-        Destroy(newFeedback.gameObject, Mathf.Max(main.duration, 0.05f));
+        EnsureTouchParticlePool();
+        _touchParticlePool?.PlayAt(spawnPos, Quaternion.identity);
     }
 
     bool TrySpawnOnUiAtScreen(Vector2 screen, Canvas hintCanvas)
@@ -197,7 +286,7 @@ public sealed class GlobalTouchManager : MonoBehaviour
 
         var eventCam = target.renderMode == RenderMode.ScreenSpaceOverlay
             ? null
-            : (target.worldCamera != null ? target.worldCamera : Camera.main);
+            : (target.worldCamera != null ? target.worldCamera : GetWorldCamera());
 
         if (!RectTransformUtility.ScreenPointToWorldPointInRectangle(canvasRt, screen, eventCam, out var spawnWorld))
             return false;
@@ -206,23 +295,24 @@ public sealed class GlobalTouchManager : MonoBehaviour
         return true;
     }
 
-    static bool TryGetFrontmostUiCanvas(out Canvas canvas)
+    bool TryGetFrontmostUiCanvas(out Canvas canvas)
     {
         canvas = null;
+        if (_uiRootCanvases.Count == 0)
+            RefreshUiRaycastCache();
+
         var bestScore = int.MinValue;
-        foreach (var c in FindObjectsByType<Canvas>(FindObjectsInactive.Exclude))
+        for (int i = 0; i < _uiRootCanvases.Count; i++)
         {
-            if (!c.isRootCanvas || !c.enabled || !c.gameObject.activeInHierarchy)
-                continue;
-            if (c.renderMode != RenderMode.ScreenSpaceOverlay &&
-                c.renderMode != RenderMode.ScreenSpaceCamera)
+            var c = _uiRootCanvases[i];
+            if (c == null || !c.enabled || !c.gameObject.activeInHierarchy)
                 continue;
 
             var score = c.sortingOrder + (c.renderMode == RenderMode.ScreenSpaceOverlay ? 1_000_000 : 0);
             if (score >= bestScore)
             {
                 bestScore = score;
-                canvas = c.rootCanvas;
+                canvas = c;
             }
         }
 
@@ -236,9 +326,17 @@ public sealed class GlobalTouchManager : MonoBehaviour
         SpawnParticleAtWorldRoot(spawnPos);
     }
 
-    public void SetPrefab(ParticleSystem prefab) => touchParticlePrefab = prefab;
+    public void SetPrefab(ParticleSystem prefab)
+    {
+        touchParticlePrefab = prefab;
+        EnsureTouchParticlePool();
+    }
 
-    public void SetWorldCamera(Camera cam) => worldCamera = cam;
+    public void SetWorldCamera(Camera cam)
+    {
+        worldCamera = cam;
+        CacheFallbackCamera();
+    }
 
     public static GlobalTouchManager EnsureExists(ParticleSystem prefab, Camera worldCam = null)
     {

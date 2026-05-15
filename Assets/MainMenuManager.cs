@@ -15,6 +15,12 @@ public class MainMenuManager : MonoBehaviour
 
     void Awake()
     {
+        // VSync'i kapat ki cihazın ekran yenileme hızıyla çakışıp performansı bölmesin
+        QualitySettings.vSyncCount = 0;
+
+        // Cihazın işlemcisini tam kapasite kullanmaya zorla (60 veya 120 FPS kilidi)
+        Application.targetFrameRate = 60; // Akıcılığı garantilemek için
+
         // Not: SettingsPanel inactive başlıyorsa GameObject.Find bulamaz.
         // Bu yüzden Canvas altından Transform.Find ile buluyoruz (inactive olsa da çalışır).
         if (settingsPanel == null)

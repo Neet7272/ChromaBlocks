@@ -53,7 +53,22 @@ public sealed class GridManager : MonoBehaviour
 
     ShapeSpawner _shapeSpawner;
 
-    readonly List<GridCell> _highlightedCells = new();
+    const int MaxShapeBlocks = 25;
+
+    readonly List<GridCell> _placementTargetCells = new();
+    readonly Dictionary<Vector2Int, int> _anchorVotes = new();
+    readonly HashSet<GridCell> _placementUsedCells = new();
+    readonly HashSet<GridCell> _highlightedCells = new();
+    readonly HashSet<GridCell> _previewClearCells = new();
+    readonly HashSet<GridCell> _cascadeClearCells = new();
+    readonly List<(int x, int y)> _matchCorners = new();
+
+    GridCell[] _nearestCellsBuffer;
+    bool[,] _simOccupied;
+    Color[,] _simColors;
+
+    ParticleSystemPool _blastParticlePool;
+
     Transform _placedBlocksRoot;
     int _score;
 
@@ -96,12 +111,47 @@ public sealed class GridManager : MonoBehaviour
             cameraManager = FindAnyObjectByType<CameraManager>();
         if (_shapeSpawner == null)
             _shapeSpawner = FindAnyObjectByType<ShapeSpawner>();
+
+        EnsurePlacementScratchBuffers();
+        EnsureBlastParticlePool();
     }
 
     void Start()
     {
         if (generateOnStart)
             GenerateGrid();
+        else
+            EnsurePlacementScratchBuffers();
+    }
+
+    void EnsurePlacementScratchBuffers()
+    {
+        if (columns < 1 || rows < 1)
+            return;
+
+        if (_nearestCellsBuffer == null || _nearestCellsBuffer.Length < MaxShapeBlocks)
+            _nearestCellsBuffer = new GridCell[MaxShapeBlocks];
+
+        if (_simOccupied == null || _simOccupied.GetLength(0) != columns || _simOccupied.GetLength(1) != rows)
+        {
+            _simOccupied = new bool[columns, rows];
+            _simColors = new Color[columns, rows];
+        }
+    }
+
+    void EnsureBlastParticlePool()
+    {
+        if (blastParticlePrefab == null)
+            return;
+
+        if (_blastParticlePool == null)
+        {
+            var poolGo = new GameObject("BlastParticlePool");
+            poolGo.transform.SetParent(transform);
+            _blastParticlePool = poolGo.AddComponent<ParticleSystemPool>();
+        }
+
+        _blastParticlePool.Initialize(blastParticlePrefab, 12, _blastParticlePool.transform);
     }
 
     public void GenerateGrid()
@@ -157,6 +207,7 @@ public sealed class GridManager : MonoBehaviour
             startY + (rows - 1) * _stepY + cellSize.y * 0.5f
         );
         _gridBoundsValid = true;
+        EnsurePlacementScratchBuffers();
     }
 
     /// <summary>
@@ -258,19 +309,21 @@ public sealed class GridManager : MonoBehaviour
 
     public bool CanPlaceShape(Shape shape, out List<GridCell> targetCells, out GridCell anchorCell)
     {
-        targetCells = new List<GridCell>();
+        _placementTargetCells.Clear();
+        targetCells = _placementTargetCells;
         anchorCell = null;
 
         if (shape == null || gridArray == null) return false;
 
         var blocks = shape.Blocks;
         if (blocks == null || blocks.Count == 0) return false;
+        if (blocks.Count > MaxShapeBlocks)
+            return false;
 
         // Rigid yerleşim: Her blok için "en yakın hücre"yi bul,
         // sonra offset'lerine göre olası anchor hücreyi türet ve çoğunluğun anchor'unu seç.
         // Böylece tek bir blok şaşırsa bile şekil bütün olarak doğru yere oturur.
-        var anchorVotes = new Dictionary<Vector2Int, int>();
-        var nearestCells = new GridCell[blocks.Count];
+        _anchorVotes.Clear();
 
         for (int i = 0; i < blocks.Count; i++)
         {
@@ -288,10 +341,10 @@ public sealed class GridManager : MonoBehaviour
                     return false;
             }
 
-            nearestCells[i] = near;
+            _nearestCellsBuffer[i] = near;
             var impliedAnchor = new Vector2Int(near.X - b.Offset.x, near.Y - b.Offset.y);
-            anchorVotes.TryGetValue(impliedAnchor, out var cnt);
-            anchorVotes[impliedAnchor] = cnt + 1;
+            _anchorVotes.TryGetValue(impliedAnchor, out var cnt);
+            _anchorVotes[impliedAnchor] = cnt + 1;
         }
 
         // En çok oy alan anchor'u seç; eşitlikte toplam hata (distance) küçük olan kazansın.
@@ -299,7 +352,7 @@ public sealed class GridManager : MonoBehaviour
         var bestVotes = -1;
         var bestError = float.PositiveInfinity;
 
-        foreach (var kv in anchorVotes)
+        foreach (var kv in _anchorVotes)
         {
             var a = kv.Key;
             var votes = kv.Value;
@@ -336,7 +389,7 @@ public sealed class GridManager : MonoBehaviour
         }
 
         // Seçilen anchor'a göre kesin doğrulama + target hücre listesi (blok sırası ile)
-        var used = new HashSet<GridCell>();
+        _placementUsedCells.Clear();
         for (int i = 0; i < blocks.Count; i++)
         {
             var b = blocks[i];
@@ -349,9 +402,9 @@ public sealed class GridManager : MonoBehaviour
             var cell = gridArray[gx, gy];
             if (cell == null) return false;
             if (cell.IsOccupied) return false;
-            if (!used.Add(cell)) return false;
+            if (!_placementUsedCells.Add(cell)) return false;
 
-            targetCells.Add(cell);
+            _placementTargetCells.Add(cell);
         }
 
         anchorCell = gridArray[bestAnchor.x, bestAnchor.y];
@@ -496,15 +549,18 @@ public sealed class GridManager : MonoBehaviour
         if (shape == null)
             return;
 
+        // Yerleşim önizlemesi: parmak değil, her çocuk bloğun dünya pozisyonu (CanPlaceShape).
+        shape.RestoreBlockLayoutTransforms();
+
         if (!CanPlaceShape(shape, out var cells, out _))
             return;
 
-        if (TrySimulateClearAfterPlacement(shape, cells, out var clearCells) && clearCells.Count > 0)
+        if (TrySimulateClearAfterPlacement(shape, cells) && _previewClearCells.Count > 0)
         {
             for (int i = 0; i < cells.Count; i++)
                 HighlightPredictiveClear(cells[i]);
 
-            foreach (var cell in clearCells)
+            foreach (var cell in _previewClearCells)
                 HighlightPredictiveClear(cell);
 
             return;
@@ -518,9 +574,8 @@ public sealed class GridManager : MonoBehaviour
 
     public void ResetHighlights()
     {
-        for (int i = 0; i < _highlightedCells.Count; i++)
+        foreach (var c in _highlightedCells)
         {
-            var c = _highlightedCells[i];
             if (c != null)
                 c.ResetHighlight();
         }
@@ -534,8 +589,7 @@ public sealed class GridManager : MonoBehaviour
             return;
 
         cell.SetPlacementHoverHighlight();
-        if (!_highlightedCells.Contains(cell))
-            _highlightedCells.Add(cell);
+        _highlightedCells.Add(cell);
     }
 
     void HighlightPredictiveClear(GridCell cell)
@@ -544,19 +598,19 @@ public sealed class GridManager : MonoBehaviour
             return;
 
         cell.SetPredictiveClearHighlight();
-        if (!_highlightedCells.Contains(cell))
-            _highlightedCells.Add(cell);
+        _highlightedCells.Add(cell);
     }
 
-    bool TrySimulateClearAfterPlacement(Shape shape, List<GridCell> targetCells, out HashSet<GridCell> clearCells)
+    bool TrySimulateClearAfterPlacement(Shape shape, List<GridCell> targetCells)
     {
-        clearCells = new HashSet<GridCell>();
+        _previewClearCells.Clear();
         if (gridArray == null || shape == null || targetCells == null || targetCells.Count == 0)
             return false;
 
-        var occupied = new bool[columns, rows];
-        var colors = new Color[columns, rows];
-        CaptureGridState(occupied, colors);
+        if (_simOccupied == null || _simColors == null)
+            EnsurePlacementScratchBuffers();
+
+        CaptureGridState(_simOccupied, _simColors);
 
         var blocks = shape.Blocks;
         for (int i = 0; i < targetCells.Count; i++)
@@ -565,12 +619,12 @@ public sealed class GridManager : MonoBehaviour
             if (cell == null)
                 continue;
 
-            occupied[cell.X, cell.Y] = true;
+            _simOccupied[cell.X, cell.Y] = true;
             if (blocks != null && i < blocks.Count)
-                colors[cell.X, cell.Y] = blocks[i].Color;
+                _simColors[cell.X, cell.Y] = blocks[i].Color;
         }
 
-        return TryBuild2x2ClearSetFromState(occupied, colors, out clearCells, out _);
+        return TryBuild2x2ClearSetFromState(_simOccupied, _simColors, _previewClearCells, out _);
     }
 
     void CaptureGridState(bool[,] occupied, Color[,] colors)
@@ -1009,12 +1063,12 @@ public sealed class GridManager : MonoBehaviour
         // Patlama kalmayana kadar devam et
         while (true)
         {
-            if (!TryBuild2x2ClearSet(out var toClear, out var isCombo))
+            if (!TryBuild2x2ClearSet(out var isCombo))
                 break;
 
-            var fxCenter = AverageWorldPosition(toClear);
+            var fxCenter = AverageWorldPosition(_cascadeClearCells);
 
-            var clearedCount = ClearCellsWithTween(toClear);
+            var clearedCount = ClearCellsWithTween(_cascadeClearCells);
             if (clearedCount <= 0)
                 break;
 
@@ -1045,30 +1099,31 @@ public sealed class GridManager : MonoBehaviour
         OnBoardSettled?.Invoke();
     }
 
-    bool TryBuild2x2ClearSet(out HashSet<GridCell> toClear, out bool isCombo)
+    bool TryBuild2x2ClearSet(out bool isCombo)
     {
-        toClear = new HashSet<GridCell>();
+        _cascadeClearCells.Clear();
         isCombo = false;
 
         if (gridArray == null)
             return false;
 
-        var occupied = new bool[columns, rows];
-        var colors = new Color[columns, rows];
-        CaptureGridState(occupied, colors);
-        return TryBuild2x2ClearSetFromState(occupied, colors, out toClear, out isCombo);
+        if (_simOccupied == null || _simColors == null)
+            EnsurePlacementScratchBuffers();
+
+        CaptureGridState(_simOccupied, _simColors);
+        return TryBuild2x2ClearSetFromState(_simOccupied, _simColors, _cascadeClearCells, out isCombo);
     }
 
-    bool TryBuild2x2ClearSetFromState(bool[,] occupied, Color[,] colors, out HashSet<GridCell> toClear, out bool isCombo)
+    bool TryBuild2x2ClearSetFromState(bool[,] occupied, Color[,] colors, HashSet<GridCell> toClear, out bool isCombo)
     {
-        toClear = new HashSet<GridCell>();
+        toClear.Clear();
         isCombo = false;
 
         if (gridArray == null)
             return false;
 
         // 2x2 eşleşmelerin sol-alt köşeleri
-        var matches = new List<(int x, int y)>();
+        _matchCorners.Clear();
         for (int y = 0; y < rows - 1; y++)
         {
             for (int x = 0; x < columns - 1; x++)
@@ -1081,18 +1136,18 @@ public sealed class GridManager : MonoBehaviour
                     SameColor(a, colors[x, y + 1]) &&
                     SameColor(a, colors[x + 1, y + 1]))
                 {
-                    matches.Add((x, y));
+                    _matchCorners.Add((x, y));
                 }
             }
         }
 
-        if (matches.Count == 0)
+        if (_matchCorners.Count == 0)
             return false;
 
         // Shockwave: 2x2'yi her yönden 1 hücre saracak şekilde 4x4 bounding box.
-        for (int i = 0; i < matches.Count; i++)
+        for (int i = 0; i < _matchCorners.Count; i++)
         {
-            var (mx, my) = matches[i];
+            var (mx, my) = _matchCorners[i];
             var startX = mx - 1;
             var endX = mx + 2;
             var startY = my - 1;
@@ -1123,12 +1178,12 @@ public sealed class GridManager : MonoBehaviour
             }
         }
 
-        isCombo = matches.Count >= 2;
+        isCombo = _matchCorners.Count >= 2;
         if (isCombo)
         {
-            for (int i = 0; i < matches.Count; i++)
+            for (int i = 0; i < _matchCorners.Count; i++)
             {
-                var (mx, my) = matches[i];
+                var (mx, my) = _matchCorners[i];
 
                 var rowsToClear = new[] { my, my + 1 };
                 var colsToClear = new[] { mx, mx + 1 };
@@ -1195,12 +1250,14 @@ public sealed class GridManager : MonoBehaviour
                     if (block == null)
                         return;
 
-                    if (blastParticlePrefab != null)
+                    if (_blastParticlePool != null)
                     {
-                        var newBlast = Instantiate(blastParticlePrefab, block.position, Quaternion.identity);
-                        var mainModule = newBlast.main;
-                        mainModule.startColor = blockedColor;
-                        Destroy(newBlast.gameObject, newBlast.main.duration);
+                        var blastColor = blockedColor;
+                        _blastParticlePool.PlayAt(block.position, Quaternion.identity, ps =>
+                        {
+                            var mainModule = ps.main;
+                            mainModule.startColor = blastColor;
+                        });
                     }
 
                     Destroy(block.gameObject);

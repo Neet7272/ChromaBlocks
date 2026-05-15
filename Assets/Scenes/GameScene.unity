@@ -2827,6 +2827,54 @@ CanvasRenderer:
   m_PrefabAsset: {fileID: 0}
   m_GameObject: {fileID: 1848744310}
   m_CullTransparentMesh: 1
+--- !u!1 &2034795048
+GameObject:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  serializedVersion: 6
+  m_Component:
+  - component: {fileID: 2034795050}
+  - component: {fileID: 2034795049}
+  m_Layer: 0
+  m_Name: GlobalTouchManager
+  m_TagString: Untagged
+  m_Icon: {fileID: 0}
+  m_NavMeshLayer: 0
+  m_StaticEditorFlags: 0
+  m_IsActive: 1
+--- !u!114 &2034795049
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 2034795048}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 799f398432f90a94fbc31b82f0bcedf5, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: Assembly-CSharp::GlobalTouchManager
+  touchParticlePrefab: {fileID: 2444615764501893126, guid: 6e3370e3c8160f244986de3042058aac, type: 3}
+  worldCamera: {fileID: 770414656}
+  screenToWorldPlaneZ: 5
+  touchPoolPrewarm: 8
+--- !u!4 &2034795050
+Transform:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 2034795048}
+  serializedVersion: 2
+  m_LocalRotation: {x: 0, y: 0, z: 0, w: 1}
+  m_LocalPosition: {x: 0, y: 1, z: 0}
+  m_LocalScale: {x: 1, y: 1, z: 1}
+  m_ConstrainProportionsScale: 0
+  m_Children: []
+  m_Father: {fileID: 0}
+  m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
 --- !u!1 &2036611605
 GameObject:
   m_ObjectHideFlags: 0
@@ -3102,3 +3150,4 @@ SceneRoots:
   - {fileID: 1771133339}
   - {fileID: 1627860988}
   - {fileID: 977631774}
+  - {fileID: 2034795050}

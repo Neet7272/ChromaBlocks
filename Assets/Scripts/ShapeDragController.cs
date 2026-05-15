@@ -9,7 +9,7 @@ using DG.Tweening;
 /// - Drag: pointer'ı takip + Y offset
 /// - PointerUp: snap yok; doğduğu noktaya ve eski scale'e Lerp ile geri dön
 /// </summary>
-public sealed class ShapeDragController : MonoBehaviour, IPointerDownHandler, IDragHandler, IPointerUpHandler
+public sealed class ShapeDragController : MonoBehaviour, IPointerDownHandler, IBeginDragHandler, IDragHandler, IPointerUpHandler
 {
     [Header("Drag")]
     [SerializeField] float dragYOffset = 1.5f;
@@ -25,7 +25,8 @@ public sealed class ShapeDragController : MonoBehaviour, IPointerDownHandler, ID
 
     [Header("Tween Timings")]
     [SerializeField, Min(0.01f)] float pickupScaleDuration = 0.15f;
-    [SerializeField, Min(0.01f)] float dragFollowDuration = 0.06f;
+    [SerializeField, Range(0f, 1f), Tooltip("0 = anında takip; yüksek = yumuşak Lerp.")]
+    float dragFollowLerp = 0.35f;
 
     [Header("Grid Snapping")]
     [SerializeField] GridManager gridManager;
@@ -100,6 +101,7 @@ public sealed class ShapeDragController : MonoBehaviour, IPointerDownHandler, ID
 
         StopReturn();
         transform.DOKill();
+        KillChildBlockTweens();
 
         SetDraggingSorting(true);
 
@@ -107,7 +109,7 @@ public sealed class ShapeDragController : MonoBehaviour, IPointerDownHandler, ID
         p.z = dragZ;
         transform.position = p;
 
-        var targetScale = Vector3.one;
+        var targetScale = _spawnLocalScale;
         if (scaleToGridCellSize && gridManager != null && _shape != null &&
             _shape.TryGetBlockPrefabWorldSize(out var blockPrefabSize) &&
             gridManager.CellWorldSize.x > 0f && gridManager.CellWorldSize.y > 0f)
@@ -118,15 +120,27 @@ public sealed class ShapeDragController : MonoBehaviour, IPointerDownHandler, ID
 
             var sx = target.x / blockPrefabSize.x;
             var sy = target.y / blockPrefabSize.y;
+            var uniform = Mathf.Max(sx, sy);
 
-            // Non-uniform scale'a izin veriyoruz (grid hücreleri dikdörtgense)
-            targetScale = new Vector3(sx, sy, 1f);
+            // Izgara hücresi boyutu (tepsi 0.6 ile çarpma — yoksa bloklar küçük kalır)
+            targetScale = new Vector3(uniform, uniform, 1f);
         }
 
-        transform.DOScale(targetScale, pickupScaleDuration).SetEase(Ease.OutBack);
+        _shape?.RestoreBlockLayoutTransforms();
 
-        if (gridManager != null && _shape != null)
-            gridManager.UpdatePlacementPreview(_shape);
+        transform.DOScale(targetScale, pickupScaleDuration)
+            .SetEase(Ease.OutQuad)
+            .OnUpdate(OnDragScaleTweenUpdate);
+
+        ApplyDragMoveAndPreview(eventData);
+    }
+
+    public void OnBeginDrag(PointerEventData eventData)
+    {
+        if (IsInputLocked())
+            return;
+
+        _shape?.RestoreBlockLayoutTransforms();
     }
 
     public void OnDrag(PointerEventData eventData)
@@ -134,24 +148,51 @@ public sealed class ShapeDragController : MonoBehaviour, IPointerDownHandler, ID
         if (IsInputLocked())
             return;
 
+        ApplyDragMoveAndPreview(eventData);
+    }
+
+    void ApplyDragMoveAndPreview(PointerEventData eventData)
+    {
         StopReturn();
-        transform.DOKill();
 
         if (_cam == null) _cam = Camera.main;
         if (_cam == null) return;
 
-        // Screen -> World (2D için doğru Z mesafesi)
         var z = transform.position.z - _cam.transform.position.z;
         var screen = new Vector3(eventData.position.x, eventData.position.y, z);
         var world = _cam.ScreenToWorldPoint(screen);
 
         world.y += dragYOffset;
         world.z = dragZ;
-        // Smooth follow hissi: hedefe kısa tween ile yaklaş.
-        transform.DOMove(world, dragFollowDuration).SetEase(Ease.OutSine);
+
+        if (dragFollowLerp <= 0f)
+            transform.position = world;
+        else
+            transform.position = Vector3.Lerp(transform.position, world, dragFollowLerp);
+
+        _shape?.RestoreBlockLayoutTransforms();
 
         if (gridManager != null && _shape != null)
             gridManager.UpdatePlacementPreview(_shape);
+    }
+
+    void OnDragScaleTweenUpdate()
+    {
+        _shape?.RestoreBlockLayoutTransforms();
+    }
+
+    void KillChildBlockTweens()
+    {
+        if (_shape == null)
+            return;
+
+        var blocks = _shape.Blocks;
+        for (int i = 0; i < blocks.Count; i++)
+        {
+            var t = blocks[i].Transform;
+            if (t != null)
+                t.DOKill();
+        }
     }
 
     public void OnPointerUp(PointerEventData eventData)
@@ -210,6 +251,8 @@ public sealed class ShapeDragController : MonoBehaviour, IPointerDownHandler, ID
         seq.Append(transform.DOMove(mid, returnDuration * 0.45f).SetEase(Ease.InSine));
         seq.Append(transform.DOMove(target, returnDuration * 0.55f).SetEase(Ease.OutBounce));
         seq.Join(transform.DOScale(_spawnLocalScale, returnDuration).SetEase(Ease.OutBounce));
+        seq.OnUpdate(() => _shape?.RestoreBlockLayoutTransforms());
+        seq.OnComplete(() => _shape?.RestoreBlockLayoutTransforms());
     }
 
     void StopReturn()
