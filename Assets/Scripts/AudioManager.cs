@@ -9,6 +9,9 @@ public sealed class AudioManager : MonoBehaviour
 {
     public static AudioManager Instance { get; private set; }
 
+    const string PrefBgm = "BGM_ON";
+    const string PrefSfx = "SFX_ON";
+
     const string BgmChildName = "BGM_Source";
     const string SfxChildName = "SFX_Source";
 
@@ -18,9 +21,13 @@ public sealed class AudioManager : MonoBehaviour
 
     [Header("Klipler")]
     public AudioClip bgmClip;
+    public AudioClip pickUpClip;
     public AudioClip placeClip;
     public AudioClip clearClip;
     public AudioClip uiClickClip;
+
+    public bool BgmEnabled { get; private set; } = true;
+    public bool SfxEnabled { get; private set; } = true;
 
     void Awake()
     {
@@ -29,7 +36,9 @@ public sealed class AudioManager : MonoBehaviour
             Instance = this;
             transform.SetParent(null);
             DontDestroyOnLoad(gameObject);
+            GamePerformanceSettings.Apply();
             EnsurePersistentSources();
+            LoadAndApplyPreferences();
             StartBGM();
             return;
         }
@@ -42,6 +51,49 @@ public sealed class AudioManager : MonoBehaviour
     {
         if (Instance == this)
             Instance = null;
+    }
+
+    void LoadAndApplyPreferences()
+    {
+        BgmEnabled = PlayerPrefs.GetInt(PrefBgm, 1) == 1;
+        SfxEnabled = PlayerPrefs.GetInt(PrefSfx, 1) == 1;
+        ApplyMuteState();
+    }
+
+    void ApplyMuteState()
+    {
+        if (bgmSource != null)
+            bgmSource.mute = !BgmEnabled;
+
+        if (sfxSource != null)
+            sfxSource.mute = !SfxEnabled;
+    }
+
+    static void SavePreference(string key, bool enabled)
+    {
+        PlayerPrefs.SetInt(key, enabled ? 1 : 0);
+        PlayerPrefs.Save();
+    }
+
+    public void SetBgmEnabled(bool enabled, bool save = true)
+    {
+        BgmEnabled = enabled;
+        if (save)
+            SavePreference(PrefBgm, enabled);
+
+        ApplyMuteState();
+
+        if (enabled)
+            StartBGM();
+    }
+
+    public void SetSfxEnabled(bool enabled, bool save = true)
+    {
+        SfxEnabled = enabled;
+        if (save)
+            SavePreference(PrefSfx, enabled);
+
+        ApplyMuteState();
     }
 
     void EnsurePersistentSources()
@@ -62,6 +114,8 @@ public sealed class AudioManager : MonoBehaviour
 
         bgmSource.playOnAwake = false;
         sfxSource.playOnAwake = false;
+        bgmSource.volume = 1f;
+        sfxSource.volume = 1f;
     }
 
     AudioSource EnsureChildSource(
@@ -92,7 +146,6 @@ public sealed class AudioManager : MonoBehaviour
             savedMute = inspectorSource.mute;
             savedVolume = inspectorSource.volume;
 
-            // Sahne objesi yok olmadan önce durdur; müzik child kaynağa taşınacak.
             inspectorSource.Stop();
             inspectorSource.playOnAwake = false;
         }
@@ -141,7 +194,7 @@ public sealed class AudioManager : MonoBehaviour
         if (bgmSource == null)
             EnsurePersistentSources();
 
-        if (bgmSource == null || bgmClip == null)
+        if (bgmSource == null || bgmClip == null || !BgmEnabled)
             return;
 
         if (bgmSource.isPlaying)
@@ -150,21 +203,44 @@ public sealed class AudioManager : MonoBehaviour
         if (bgmSource.clip == null)
             bgmSource.clip = bgmClip;
 
-        if (!bgmSource.mute)
-            bgmSource.Play();
+        bgmSource.mute = false;
+        bgmSource.Play();
     }
 
     public void PlaySFX(AudioClip clip)
     {
-        if (clip == null)
+        if (clip == null || !SfxEnabled)
             return;
 
         if (sfxSource == null)
             EnsurePersistentSources();
 
-        if (sfxSource == null || sfxSource.mute)
+        if (sfxSource == null)
+            return;
+
+        if (sfxSource.mute)
             return;
 
         sfxSource.PlayOneShot(clip);
+    }
+
+    public void PlayPickUpSfx()
+    {
+        PlaySFX(pickUpClip != null ? pickUpClip : uiClickClip);
+    }
+
+    public void PlayPlaceSfx()
+    {
+        PlaySFX(placeClip);
+    }
+
+    public void PlayClearSfx()
+    {
+        PlaySFX(clearClip);
+    }
+
+    public void PlayUiClickSfx()
+    {
+        PlaySFX(uiClickClip);
     }
 }

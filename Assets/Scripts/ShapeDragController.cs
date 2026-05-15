@@ -132,7 +132,7 @@ public sealed class ShapeDragController : MonoBehaviour, IPointerDownHandler, IB
             .SetEase(Ease.OutQuad)
             .OnUpdate(OnDragScaleTweenUpdate);
 
-        ApplyDragMoveAndPreview(eventData);
+        ApplyDragMoveAndPreview(eventData, forcePreview: true);
     }
 
     public void OnBeginDrag(PointerEventData eventData)
@@ -141,6 +141,9 @@ public sealed class ShapeDragController : MonoBehaviour, IPointerDownHandler, IB
             return;
 
         _shape?.RestoreBlockLayoutTransforms();
+
+        if (AudioManager.Instance != null)
+            AudioManager.Instance.PlayPickUpSfx();
     }
 
     public void OnDrag(PointerEventData eventData)
@@ -148,10 +151,10 @@ public sealed class ShapeDragController : MonoBehaviour, IPointerDownHandler, IB
         if (IsInputLocked())
             return;
 
-        ApplyDragMoveAndPreview(eventData);
+        ApplyDragMoveAndPreview(eventData, forcePreview: false);
     }
 
-    void ApplyDragMoveAndPreview(PointerEventData eventData)
+    void ApplyDragMoveAndPreview(PointerEventData eventData, bool forcePreview)
     {
         StopReturn();
 
@@ -173,7 +176,7 @@ public sealed class ShapeDragController : MonoBehaviour, IPointerDownHandler, IB
         _shape?.RestoreBlockLayoutTransforms();
 
         if (gridManager != null && _shape != null)
-            gridManager.UpdatePlacementPreview(_shape);
+            gridManager.UpdatePlacementPreview(_shape, forcePreview);
     }
 
     void OnDragScaleTweenUpdate()

@@ -105,8 +105,13 @@ public sealed class GridManager : MonoBehaviour
     Vector2 _gridLocalMax;
     bool _gridBoundsValid;
 
+    int _previewAnchorX = int.MinValue;
+    int _previewAnchorY = int.MinValue;
+
     void Awake()
     {
+        GamePerformanceSettings.Apply();
+
         if (cameraManager == null)
             cameraManager = FindAnyObjectByType<CameraManager>();
         if (_shapeSpawner == null)
@@ -540,17 +545,59 @@ public sealed class GridManager : MonoBehaviour
         return true;
     }
 
-    public void UpdatePlacementPreview(Shape shape)
+    /// <summary>Şeklin anchor bloğunun altındaki en yakın ızgara hücresi (tek tarama).</summary>
+    public bool TryGetShapePreviewAnchorCell(Shape shape, out int anchorX, out int anchorY)
+    {
+        anchorX = int.MinValue;
+        anchorY = int.MinValue;
+
+        if (shape == null || gridArray == null)
+            return false;
+
+        if (!shape.TryGetAnchorWorldPosition(out var world))
+        {
+            var blocks = shape.Blocks;
+            if (blocks == null || blocks.Count == 0 || blocks[0].Transform == null)
+                return false;
+            world = blocks[0].Transform.position;
+        }
+
+        var cell = GetNearestCell(world);
+        if (cell == null)
+            return false;
+
+        anchorX = cell.X;
+        anchorY = cell.Y;
+        return true;
+    }
+
+    public void UpdatePlacementPreview(Shape shape, bool forceRefresh = false)
     {
         if (!enablePreview)
             return;
 
-        ResetHighlights();
         if (shape == null)
+        {
+            ClearPreview();
+            return;
+        }
+
+        shape.RestoreBlockLayoutTransforms();
+
+        if (!TryGetShapePreviewAnchorCell(shape, out var anchorX, out var anchorY))
+        {
+            if (_previewAnchorX != int.MinValue)
+                ClearPreview();
+            return;
+        }
+
+        if (!forceRefresh && anchorX == _previewAnchorX && anchorY == _previewAnchorY)
             return;
 
-        // Yerleşim önizlemesi: parmak değil, her çocuk bloğun dünya pozisyonu (CanPlaceShape).
-        shape.RestoreBlockLayoutTransforms();
+        _previewAnchorX = anchorX;
+        _previewAnchorY = anchorY;
+
+        ResetHighlights();
 
         if (!CanPlaceShape(shape, out var cells, out _))
             return;
@@ -570,7 +617,12 @@ public sealed class GridManager : MonoBehaviour
             HighlightPlacementHover(cells[i]);
     }
 
-    public void ClearPreview() => ResetHighlights();
+    public void ClearPreview()
+    {
+        _previewAnchorX = int.MinValue;
+        _previewAnchorY = int.MinValue;
+        ResetHighlights();
+    }
 
     public void ResetHighlights()
     {
@@ -726,7 +778,8 @@ public sealed class GridManager : MonoBehaviour
                 b.Transform.DOKill();
                 NormalizePlacedBlockScale(b.Transform);
                 PerfectMagnetSnap(b.Transform, cell.transform);
-                cell.SetPlacedBlock(b.Transform, b.Color);
+                BlockColorUtils.EnsureOpaqueBlock(b.Transform, b.Color);
+                cell.SetPlacedBlock(b.Transform, BlockColorUtils.WithOpaqueAlpha(b.Color));
                 cell.SetPreview(false);
             }
         }
@@ -734,7 +787,7 @@ public sealed class GridManager : MonoBehaviour
         _shapeSpawner?.NotifyShapeConsumed(shape);
         Destroy(shape.gameObject);
         if (AudioManager.Instance != null)
-            AudioManager.Instance.PlaySFX(AudioManager.Instance.placeClip);
+            AudioManager.Instance.PlayPlaceSfx();
 
         if (tileCount > 0)
             AddScore(tileCount, placementPopupWorld);
@@ -752,6 +805,8 @@ public sealed class GridManager : MonoBehaviour
 
         if (!block.TryGetComponent<SpriteRenderer>(out var sr) || sr.sprite == null)
             return;
+
+        BlockColorUtils.EnsureOpaqueSpriteKeepRgb(sr);
 
         var sprite = sr.sprite;
         var intrinsic = new Vector2(
@@ -904,17 +959,19 @@ public sealed class GridManager : MonoBehaviour
                 var go = Instantiate(blockPrefab, _placedBlocksRoot);
                 go.name = $"ReviveBlock_{x}_{y}";
 
+                var placedColor = BlockColorUtils.WithOpaqueAlpha(_traySnapshot.colors[x, y]);
                 if (go.TryGetComponent<SpriteRenderer>(out var sr))
-                    sr.color = _traySnapshot.colors[x, y];
+                    BlockColorUtils.EnsureOpaqueSprite(sr, placedColor);
 
                 NormalizePlacedBlockScale(go.transform);
                 PerfectMagnetSnap(go.transform, cell.transform);
-                cell.SetPlacedBlock(go.transform, _traySnapshot.colors[x, y]);
+                cell.SetPlacedBlock(go.transform, placedColor);
             }
         }
 
         _score = _traySnapshot.score;
         OnScoreChanged?.Invoke(_score, 0, null);
+        RefreshAllPlacedBlockOpacity();
     }
 
     /// <summary>Kayıt: düz dizi (sıra: y=0..rows-1, x=0..columns-1 → idx = y * columns + x).</summary>
@@ -1016,12 +1073,12 @@ public sealed class GridManager : MonoBehaviour
                     continue;
                 }
 
-                var c = colors[idx];
+                var c = BlockColorUtils.WithOpaqueAlpha(colors[idx]);
                 var go = Instantiate(blockPrefab, _placedBlocksRoot);
                 go.name = $"SaveBlock_{x}_{y}";
 
                 if (go.TryGetComponent<SpriteRenderer>(out var sr))
-                    sr.color = c;
+                    BlockColorUtils.EnsureOpaqueSprite(sr, c);
 
                 NormalizePlacedBlockScale(go.transform);
                 PerfectMagnetSnap(go.transform, cell.transform);
@@ -1030,7 +1087,32 @@ public sealed class GridManager : MonoBehaviour
             }
         }
 
+        RefreshAllPlacedBlockOpacity();
         return true;
+    }
+
+    /// <summary>Patlama / kombo / pause sonrası ızgaradaki tüm blokları tam opak yap.</summary>
+    public void RefreshAllPlacedBlockOpacity()
+    {
+        if (gridArray == null)
+            return;
+
+        for (int y = 0; y < rows; y++)
+        {
+            for (int x = 0; x < columns; x++)
+            {
+                var cell = gridArray[x, y];
+                if (cell == null || !cell.IsOccupied)
+                    continue;
+
+                var block = cell.PlacedBlock;
+                if (block == null)
+                    continue;
+
+                var opaque = BlockColorUtils.WithOpaqueAlpha(cell.PlacedColor);
+                BlockColorUtils.EnsureOpaqueBlock(block, opaque);
+            }
+        }
     }
 
     /// <summary>Kayıt sonrası skor + kombo (HUD senkronu için OnScoreChanged, ek puan 0).</summary>
@@ -1081,7 +1163,7 @@ public sealed class GridManager : MonoBehaviour
             cameraManager?.ShakeStrong();
             HapticManager.Instance?.HeavyVibration();
             if (AudioManager.Instance != null)
-                AudioManager.Instance.PlaySFX(AudioManager.Instance.clearClip);
+                AudioManager.Instance.PlayClearSfx();
 
             var sm = ScoreManager.Instance != null ? ScoreManager.Instance : FindAnyObjectByType<ScoreManager>();
             if (sm == null || !sm.HasGhostConfigured)
@@ -1096,6 +1178,8 @@ public sealed class GridManager : MonoBehaviour
         _comboMultiplier = 0;
         _isResolvingMatches = false;
         _cascadeRoutine = null;
+        RefreshAllPlacedBlockOpacity();
+        ClearPreview();
         OnBoardSettled?.Invoke();
     }
 
@@ -1242,6 +1326,9 @@ public sealed class GridManager : MonoBehaviour
             cleared++;
 
             block.DOKill();
+            if (block.TryGetComponent<SpriteRenderer>(out var clearSr))
+                BlockColorUtils.EnsureOpaqueSpriteKeepRgb(clearSr);
+
             block.DOScale(Vector3.zero, clearShrinkDuration)
                 .SetEase(Ease.InBack)
                 .SetUpdate(true)

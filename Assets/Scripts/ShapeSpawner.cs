@@ -372,9 +372,9 @@ public sealed class ShapeSpawner : MonoBehaviour
 
         var palette = new Shape.RolePalette
         {
-            Primary = slot.primary,
-            Secondary = slot.secondary,
-            Tertiary = slot.tertiary
+            Primary = BlockColorUtils.WithOpaqueAlpha(slot.primary),
+            Secondary = BlockColorUtils.WithOpaqueAlpha(slot.secondary),
+            Tertiary = BlockColorUtils.WithOpaqueAlpha(slot.tertiary)
         };
 
         int rot = (slot.rotationQuarters % 4 + 4) % 4;
@@ -423,8 +423,23 @@ public sealed class ShapeSpawner : MonoBehaviour
             return;
 
         shape.transform.DOKill();
+        shape.EnsureBlocksFullyOpaque();
         if (shape.TryGetComponent<ShapeDragController>(out var drag))
             drag.UpdateColliderBounds();
+    }
+
+    /// <summary>Pause / kombo sonrası tepsi şekillerinin opaklığını düzelt.</summary>
+    public void RefreshAllShapesOpacity()
+    {
+        RefreshShapeOpacity(_left);
+        RefreshShapeOpacity(_middle);
+        RefreshShapeOpacity(_right);
+    }
+
+    static void RefreshShapeOpacity(Shape shape)
+    {
+        if (shape != null)
+            shape.EnsureBlocksFullyOpaque();
     }
 
     void PlayTraySpawnIntro(params Shape[] shapes)
@@ -444,7 +459,10 @@ public sealed class ShapeSpawner : MonoBehaviour
                 .SetUpdate(true)
                 .OnComplete(() =>
                 {
-                    if (shape != null && shape.TryGetComponent<ShapeDragController>(out var drag))
+                    if (shape == null)
+                        return;
+                    shape.EnsureBlocksFullyOpaque();
+                    if (shape.TryGetComponent<ShapeDragController>(out var drag))
                         drag.UpdateColliderBounds();
                 });
         }
@@ -496,7 +514,12 @@ public sealed class ShapeSpawner : MonoBehaviour
             c = b;
         }
 
-        return new Shape.RolePalette { Primary = a, Secondary = b, Tertiary = c };
+        return new Shape.RolePalette
+        {
+            Primary = BlockColorUtils.WithOpaqueAlpha(a),
+            Secondary = BlockColorUtils.WithOpaqueAlpha(b),
+            Tertiary = BlockColorUtils.WithOpaqueAlpha(c)
+        };
     }
 
     ShapeData GetRandomShapeData()

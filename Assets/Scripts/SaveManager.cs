@@ -1,4 +1,5 @@
 using System.IO;
+using System.Threading.Tasks;
 using UnityEngine;
 
 /// <summary>Tepsi slotu — JsonUtility uyumlu düz alanlar.</summary>
@@ -39,6 +40,11 @@ public sealed class SaveManager : MonoBehaviour
     public static SaveManager Instance { get; private set; }
 
     static bool _restoredFromSaveThisLoad;
+
+    readonly object _writeLock = new();
+    bool _diskWriteInProgress;
+    string _queuedJson;
+    string _queuedPath;
 
     [SerializeField] GridManager gridManager;
     [SerializeField] ShapeSpawner shapeSpawner;
@@ -102,6 +108,8 @@ public sealed class SaveManager : MonoBehaviour
         if (!shapeSpawner.RestoreTrayFromSave(tray))
             Debug.LogWarning("[SaveManager] Tepsi kayıttan tam yüklenemedi (pool / prefab kontrolü).", this);
 
+        RefreshGameplayVisualOpacity();
+
         _pendingEnvelope = null;
         _restoredFromSaveThisLoad = true;
     }
@@ -109,24 +117,39 @@ public sealed class SaveManager : MonoBehaviour
     void OnEnable()
     {
         if (gridManager != null)
-            gridManager.OnBoardSettled += SaveToDisk;
+            gridManager.OnBoardSettled += HandleBoardSettledSave;
     }
 
     void OnDisable()
     {
         if (gridManager != null)
-            gridManager.OnBoardSettled -= SaveToDisk;
+            gridManager.OnBoardSettled -= HandleBoardSettledSave;
     }
+
+    void HandleBoardSettledSave() => SaveToDisk();
 
     void OnApplicationPause(bool pauseStatus)
     {
         if (pauseStatus)
+        {
             SaveToDisk();
+            return;
+        }
+
+        RefreshGameplayVisualOpacity();
+    }
+
+    void RefreshGameplayVisualOpacity()
+    {
+        if (gridManager != null)
+            gridManager.RefreshAllPlacedBlockOpacity();
+        if (shapeSpawner != null)
+            shapeSpawner.RefreshAllShapesOpacity();
     }
 
     void OnApplicationQuit()
     {
-        SaveToDisk();
+        SaveToDisk(waitForCompletion: true);
     }
 
     /// <summary>ShapeSpawner.Start içinde: kayıt uygulandıysa ilk spawn atlanır.</summary>
@@ -196,19 +219,41 @@ public sealed class SaveManager : MonoBehaviour
         return true;
     }
 
-    void SaveToDisk()
+    /// <summary>
+    /// Ana thread: Unity verisini topla + JSON üret.
+    /// Arka plan: File.WriteAllText (pause / hamle sonrası).
+    /// </summary>
+    void SaveToDisk(bool waitForCompletion = false)
     {
-        if (gridManager == null || shapeSpawner == null)
+        if (!TryBuildSaveJson(out var json, out var path))
             return;
+
+        if (waitForCompletion)
+        {
+            WriteJsonToDisk(path, json);
+            return;
+        }
+
+        ScheduleAsyncDiskWrite(path, json);
+    }
+
+    /// <summary>Unity API — yalnızca ana thread.</summary>
+    bool TryBuildSaveJson(out string json, out string path)
+    {
+        json = null;
+        path = null;
+
+        if (gridManager == null || shapeSpawner == null)
+            return false;
 
         if (shapeSpawner.IsGameOver)
-            return;
+            return false;
 
         if (gridManager.IsResolvingMatches)
-            return;
+            return false;
 
         if (gridManager.gridArray == null)
-            return;
+            return false;
 
         gridManager.BuildFlatGridStateForSave(out var occ, out var cols);
 
@@ -228,13 +273,78 @@ public sealed class SaveManager : MonoBehaviour
 
         try
         {
-            var json = JsonUtility.ToJson(env);
-            var path = Path.Combine(Application.persistentDataPath, FileName);
+            json = JsonUtility.ToJson(env);
+            path = Path.Combine(Application.persistentDataPath, FileName);
+            return !string.IsNullOrEmpty(json) && !string.IsNullOrEmpty(path);
+        }
+        catch (System.Exception ex)
+        {
+            Debug.LogWarning("[SaveManager] JSON oluşturulamadı: " + ex.Message, this);
+            return false;
+        }
+    }
+
+    void ScheduleAsyncDiskWrite(string path, string json)
+    {
+        lock (_writeLock)
+        {
+            if (_diskWriteInProgress)
+            {
+                _queuedPath = path;
+                _queuedJson = json;
+                return;
+            }
+
+            _diskWriteInProgress = true;
+        }
+
+        var self = this;
+        Task.Run(() =>
+        {
+            WriteJsonToDisk(path, json);
+            if (self != null)
+                self.FinishAsyncWriteCycle();
+        });
+    }
+
+    static void WriteJsonToDisk(string path, string json)
+    {
+        try
+        {
             File.WriteAllText(path, json);
         }
         catch (IOException ex)
         {
-            Debug.LogWarning("[SaveManager] Kayıt yazılamadı: " + ex.Message, this);
+            Debug.LogWarning("[SaveManager] Arka plan kayıt yazılamadı: " + ex.Message);
         }
+    }
+
+    void FinishAsyncWriteCycle()
+    {
+        string nextPath = null;
+        string nextJson = null;
+
+        lock (_writeLock)
+        {
+            _diskWriteInProgress = false;
+
+            if (!string.IsNullOrEmpty(_queuedJson) && !string.IsNullOrEmpty(_queuedPath))
+            {
+                nextPath = _queuedPath;
+                nextJson = _queuedJson;
+                _queuedPath = null;
+                _queuedJson = null;
+                _diskWriteInProgress = true;
+            }
+        }
+
+        if (nextJson == null)
+            return;
+
+        Task.Run(() =>
+        {
+            WriteJsonToDisk(nextPath, nextJson);
+            FinishAsyncWriteCycle();
+        });
     }
 }

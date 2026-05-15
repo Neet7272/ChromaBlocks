@@ -32,7 +32,7 @@ public sealed class Shape : MonoBehaviour
         {
             Transform = t;
             Offset = offset;
-            Color = color;
+            Color = BlockColorUtils.WithOpaqueAlpha(color);
         }
     }
 
@@ -158,9 +158,9 @@ public sealed class Shape : MonoBehaviour
             if (go.TryGetComponent<ShapeDragController>(out var strayDrag))
                 Destroy(strayDrag);
 
-            var color = ResolveRoleColor(role);
+            var color = BlockColorUtils.WithOpaqueAlpha(ResolveRoleColor(role));
             if (go.TryGetComponent<SpriteRenderer>(out var sr))
-                sr.color = color;
+                BlockColorUtils.EnsureOpaqueSprite(sr, color);
 
             _spawnedBlocks.Add(go.transform);
             var offset = new Vector2Int(rx - min.x, ry - min.y);
@@ -170,6 +170,8 @@ public sealed class Shape : MonoBehaviour
             if (offset == Vector2Int.zero)
                 _anchorBlock = go.transform;
         }
+
+        EnsureBlocksFullyOpaque();
 
         // Drag raycast/collider alanı şeklin yeni bounds'una göre güncellensin.
         if (TryGetComponent<ShapeDragController>(out var drag))
@@ -189,6 +191,12 @@ public sealed class Shape : MonoBehaviour
     }
 
     public IReadOnlyList<BlockInstance> Blocks => _blocks;
+
+    /// <summary>Tepsi / kayıt sonrası hayalet (soluk) blokları düzeltir.</summary>
+    public void EnsureBlocksFullyOpaque()
+    {
+        BlockColorUtils.EnsureOpaqueHierarchy(transform);
+    }
 
     /// <summary>Sürükleme / ölçek tween sonrası çocuk blokları Rebuild düzenine geri sarar.</summary>
     public void RestoreBlockLayoutTransforms()

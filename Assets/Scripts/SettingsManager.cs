@@ -1,15 +1,12 @@
 using UnityEngine;
 
 /// <summary>
-/// BGM / SFX / titreşim ayarları. PlayerPrefs ile kalıcı.
-/// Ses çıkışı AudioManager üzerinden mute ile kontrol edilir.
+/// BGM / SFX / titreşim ayarları. Ses tercihleri AudioManager + PlayerPrefs üzerinden kalıcı.
 /// </summary>
 public sealed class SettingsManager : MonoBehaviour
 {
     public static SettingsManager Instance { get; private set; }
 
-    const string PrefBgm = "BGM_ON";
-    const string PrefSfx = "SFX_ON";
     const string PrefVibration = "VIBRATION_ON";
 
     [Header("Toggle UI (sahnedeki AnimatedToggle referansları)")]
@@ -25,6 +22,8 @@ public sealed class SettingsManager : MonoBehaviour
     public bool IsSfxOn => SfxEnabled;
     public bool IsVibrationOn => VibrationEnabled;
 
+    bool _isInitializing;
+
     public static bool AllowsScreenShakeAndHaptics =>
         Instance == null || Instance.VibrationEnabled;
 
@@ -35,13 +34,25 @@ public sealed class SettingsManager : MonoBehaviour
 
     void Start()
     {
-        BgmEnabled = PlayerPrefs.GetInt(PrefBgm, 1) == 1;
-        SfxEnabled = PlayerPrefs.GetInt(PrefSfx, 1) == 1;
+        _isInitializing = true;
+
+        if (AudioManager.Instance != null)
+        {
+            BgmEnabled = AudioManager.Instance.BgmEnabled;
+            SfxEnabled = AudioManager.Instance.SfxEnabled;
+        }
+        else
+        {
+            BgmEnabled = PlayerPrefs.GetInt("BGM_ON", 1) == 1;
+            SfxEnabled = PlayerPrefs.GetInt("SFX_ON", 1) == 1;
+        }
+
         VibrationEnabled = PlayerPrefs.GetInt(PrefVibration, 1) == 1;
         HapticManager.LoadEnabledFromPrefs();
 
-        ApplyAudioFromPrefs();
         SyncToggleVisuals();
+
+        _isInitializing = false;
     }
 
     void OnDestroy()
@@ -50,25 +61,10 @@ public sealed class SettingsManager : MonoBehaviour
             Instance = null;
     }
 
-    void SaveBool(string key, bool value)
+    void SaveVibration(bool value)
     {
-        PlayerPrefs.SetInt(key, value ? 1 : 0);
+        PlayerPrefs.SetInt(PrefVibration, value ? 1 : 0);
         PlayerPrefs.Save();
-    }
-
-    void ApplyAudioFromPrefs()
-    {
-        if (AudioManager.Instance != null)
-        {
-            if (AudioManager.Instance.bgmSource != null)
-                AudioManager.Instance.bgmSource.mute = !BgmEnabled;
-
-            if (AudioManager.Instance.sfxSource != null)
-                AudioManager.Instance.sfxSource.mute = !SfxEnabled;
-        }
-
-        if (BgmEnabled)
-            AudioManager.Instance?.StartBGM();
     }
 
     void SyncToggleVisuals()
@@ -80,28 +76,38 @@ public sealed class SettingsManager : MonoBehaviour
 
     public void ToggleBGM(bool isOn)
     {
+        if (_isInitializing)
+            return;
+
+        if (AudioManager.Instance != null)
+            AudioManager.Instance.PlayUiClickSfx();
+
         BgmEnabled = isOn;
-        SaveBool(PrefBgm, isOn);
-
-        if (AudioManager.Instance != null && AudioManager.Instance.bgmSource != null)
-            AudioManager.Instance.bgmSource.mute = !isOn;
-
-        if (isOn)
-            AudioManager.Instance?.StartBGM();
+        AudioManager.Instance?.SetBgmEnabled(isOn);
     }
 
     public void ToggleSFX(bool isOn)
     {
-        SfxEnabled = isOn;
-        SaveBool(PrefSfx, isOn);
+        if (_isInitializing)
+            return;
 
-        if (AudioManager.Instance != null && AudioManager.Instance.sfxSource != null)
-            AudioManager.Instance.sfxSource.mute = !isOn;
+        if (AudioManager.Instance != null)
+            AudioManager.Instance.PlayUiClickSfx();
+
+        SfxEnabled = isOn;
+        AudioManager.Instance?.SetSfxEnabled(isOn);
     }
 
     public void ToggleVibration(bool isOn)
     {
+        if (_isInitializing)
+            return;
+
+        if (AudioManager.Instance != null)
+            AudioManager.Instance.PlayUiClickSfx();
+
         VibrationEnabled = isOn;
+        SaveVibration(isOn);
         HapticManager.SetHapticEnabled(isOn);
     }
 
