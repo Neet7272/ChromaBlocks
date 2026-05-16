@@ -55,6 +55,24 @@ public sealed class GridManager : MonoBehaviour
 
     const int MaxShapeBlocks = 25;
 
+    /// <summary>
+    /// Monokrom 2x2 sol-alt köşesi (x,y) iken temizlenecek <b>sabit</b> 12 hücre ofsetleri.
+    /// Döngü / özyineleme / şablon dışı komşu yok; sadece bu liste + sınır + occupied.
+    /// </summary>
+    static readonly Vector2Int[] TwoByTwoBombTemplateOffsets =
+    {
+        // çekirdek (4)
+        new Vector2Int(0, 0), new Vector2Int(1, 0), new Vector2Int(0, 1), new Vector2Int(1, 1),
+        // sol (2)
+        new Vector2Int(-1, 0), new Vector2Int(-1, 1),
+        // sağ (2)
+        new Vector2Int(2, 0), new Vector2Int(2, 1),
+        // alt (2)
+        new Vector2Int(0, -1), new Vector2Int(1, -1),
+        // üst (2)
+        new Vector2Int(0, 2), new Vector2Int(1, 2),
+    };
+
     readonly List<GridCell> _placementTargetCells = new();
     readonly Dictionary<Vector2Int, int> _anchorVotes = new();
     readonly HashSet<GridCell> _placementUsedCells = new();
@@ -66,6 +84,10 @@ public sealed class GridManager : MonoBehaviour
     GridCell[] _nearestCellsBuffer;
     bool[,] _simOccupied;
     Color[,] _simColors;
+
+    /// <summary>Kayıt JSON üretimi için GC azaltma; yalnızca ToJson anında okunur.</summary>
+    bool[] _flatSaveOccupied;
+    Color[] _flatSaveColors;
 
     ParticleSystemPool _blastParticlePool;
 
@@ -597,6 +619,7 @@ public sealed class GridManager : MonoBehaviour
         _previewAnchorX = anchorX;
         _previewAnchorY = anchorY;
 
+        _previewClearCells.Clear();
         ResetHighlights();
 
         if (!CanPlaceShape(shape, out var cells, out _))
@@ -604,11 +627,18 @@ public sealed class GridManager : MonoBehaviour
 
         if (TrySimulateClearAfterPlacement(shape, cells) && _previewClearCells.Count > 0)
         {
-            for (int i = 0; i < cells.Count; i++)
-                HighlightPredictiveClear(cells[i]);
-
+            // Altın kural: mavi = yalnızca 12'li şablonda VE simülasyonda dolu olan hücreler (_previewClearCells).
+            // Yerleşen şeklin şablon dışındaki parçaları asla "patlayacak" mavisiyle boyanmaz.
             foreach (var cell in _previewClearCells)
                 HighlightPredictiveClear(cell);
+
+            for (int i = 0; i < cells.Count; i++)
+            {
+                var c = cells[i];
+                if (c == null || _previewClearCells.Contains(c))
+                    continue;
+                HighlightPlacementHover(c);
+            }
 
             return;
         }
@@ -621,6 +651,7 @@ public sealed class GridManager : MonoBehaviour
     {
         _previewAnchorX = int.MinValue;
         _previewAnchorY = int.MinValue;
+        _previewClearCells.Clear();
         ResetHighlights();
     }
 
@@ -665,18 +696,33 @@ public sealed class GridManager : MonoBehaviour
         CaptureGridState(_simOccupied, _simColors);
 
         var blocks = shape.Blocks;
-        for (int i = 0; i < targetCells.Count; i++)
+        if (blocks != null && blocks.Count > 0)
         {
-            var cell = targetCells[i];
-            if (cell == null)
-                continue;
+            int n = Mathf.Min(blocks.Count, targetCells.Count);
+            for (int i = 0; i < n; i++)
+            {
+                var cell = targetCells[i];
+                if (cell == null)
+                    continue;
 
-            _simOccupied[cell.X, cell.Y] = true;
-            if (blocks != null && i < blocks.Count)
-                _simColors[cell.X, cell.Y] = blocks[i].Color;
+                var b = blocks[i];
+                _simOccupied[cell.X, cell.Y] = true;
+                _simColors[cell.X, cell.Y] = GetSimulatedBlockColor(b);
+            }
         }
 
         return TryBuild2x2ClearSetFromState(_simOccupied, _simColors, _previewClearCells, out _);
+    }
+
+    /// <summary>Önizleme / 2x2 kontrolü: görsel = SpriteRenderer, gerisi BlockInstance.Color.</summary>
+    static Color GetSimulatedBlockColor(Shape.BlockInstance b)
+    {
+        if (b.Transform != null &&
+            b.Transform.TryGetComponent<SpriteRenderer>(out var sr) &&
+            sr != null)
+            return BlockColorUtils.WithOpaqueAlpha(sr.color);
+
+        return BlockColorUtils.WithOpaqueAlpha(b.Color);
     }
 
     void CaptureGridState(bool[,] occupied, Color[,] colors)
@@ -686,8 +732,16 @@ public sealed class GridManager : MonoBehaviour
             for (int x = 0; x < columns; x++)
             {
                 var cell = gridArray[x, y];
-                occupied[x, y] = cell != null && cell.IsOccupied;
-                colors[x, y] = cell != null ? cell.PlacedColor : default;
+                if (cell != null && cell.IsOccupied)
+                {
+                    occupied[x, y] = true;
+                    colors[x, y] = BlockColorUtils.WithOpaqueAlpha(cell.PlacedColor);
+                }
+                else
+                {
+                    occupied[x, y] = false;
+                    colors[x, y] = default;
+                }
             }
         }
     }
@@ -791,8 +845,6 @@ public sealed class GridManager : MonoBehaviour
 
         if (tileCount > 0)
             AddScore(tileCount, placementPopupWorld);
-
-        HapticManager.Instance?.LightVibration();
 
         StartResolve2x2Cascade();
         return true;
@@ -974,12 +1026,19 @@ public sealed class GridManager : MonoBehaviour
         RefreshAllPlacedBlockOpacity();
     }
 
-    /// <summary>Kayıt: düz dizi (sıra: y=0..rows-1, x=0..columns-1 → idx = y * columns + x).</summary>
+    /// <summary>Kayıt: düz dizi (sıra: y=0..rows-1, x=0..columns-1 → idx = y * columns + x). Aynı tamponlar tekrar kullanılır.</summary>
     public void BuildFlatGridStateForSave(out bool[] occupied, out Color[] colors)
     {
         int n = columns * rows;
-        occupied = new bool[n];
-        colors = new Color[n];
+        if (_flatSaveOccupied == null || _flatSaveOccupied.Length != n)
+        {
+            _flatSaveOccupied = new bool[n];
+            _flatSaveColors = new Color[n];
+        }
+
+        occupied = _flatSaveOccupied;
+        colors = _flatSaveColors;
+
         if (gridArray == null)
             return;
 
@@ -1161,7 +1220,7 @@ public sealed class GridManager : MonoBehaviour
             if (cameraManager == null)
                 cameraManager = FindAnyObjectByType<CameraManager>();
             cameraManager?.ShakeStrong();
-            HapticManager.Instance?.HeavyVibration();
+            HapticManager.Instance?.PlayHeavyHaptic();
             if (AudioManager.Instance != null)
                 AudioManager.Instance.PlayClearSfx();
 
@@ -1198,117 +1257,66 @@ public sealed class GridManager : MonoBehaviour
         return TryBuild2x2ClearSetFromState(_simOccupied, _simColors, _cascadeClearCells, out isCombo);
     }
 
+    /// <summary>
+    /// 2x2 yalnızca monokrom tespit edilir. Patlama: <see cref="TwoByTwoBombTemplateOffsets"/> ile
+    /// sabit 12 hücre (sınır içi ve occupied). Combo skor çarpanı kalır; ekstra satır/sütun temizliği yok.
+    /// </summary>
     bool TryBuild2x2ClearSetFromState(bool[,] occupied, Color[,] colors, HashSet<GridCell> toClear, out bool isCombo)
     {
         toClear.Clear();
         isCombo = false;
 
-        if (gridArray == null)
+        if (gridArray == null || occupied == null || colors == null)
             return false;
 
-        // 2x2 eşleşmelerin sol-alt köşeleri
         _matchCorners.Clear();
         for (int y = 0; y < rows - 1; y++)
         {
             for (int x = 0; x < columns - 1; x++)
             {
-                if (!occupied[x, y] || !occupied[x + 1, y] || !occupied[x, y + 1] || !occupied[x + 1, y + 1])
+                if (!IsStrictMonochromeTwoByTwo(occupied, colors, x, y))
                     continue;
 
-                var a = colors[x, y];
-                if (SameColor(a, colors[x + 1, y]) &&
-                    SameColor(a, colors[x, y + 1]) &&
-                    SameColor(a, colors[x + 1, y + 1]))
-                {
-                    _matchCorners.Add((x, y));
-                }
+                _matchCorners.Add((x, y));
             }
         }
 
         if (_matchCorners.Count == 0)
             return false;
 
-        // Shockwave: 2x2'yi her yönden 1 hücre saracak şekilde 4x4 bounding box.
         for (int i = 0; i < _matchCorners.Count; i++)
         {
             var (mx, my) = _matchCorners[i];
-            var startX = mx - 1;
-            var endX = mx + 2;
-            var startY = my - 1;
-            var endY = my + 2;
+            if (!IsStrictMonochromeTwoByTwo(occupied, colors, mx, my))
+                continue;
 
-            for (int yy = startY; yy <= endY; yy++)
-            {
-                for (int xx = startX; xx <= endX; xx++)
-                {
-                    if ((xx == mx - 1 && yy == my - 1) ||
-                        (xx == mx - 1 && yy == my + 2) ||
-                        (xx == mx + 2 && yy == my - 1) ||
-                        (xx == mx + 2 && yy == my + 2))
-                    {
-                        continue;
-                    }
-
-                    if (xx < 0 || xx >= columns || yy < 0 || yy >= rows)
-                        continue;
-
-                    if (!occupied[xx, yy])
-                        continue;
-
-                    var cell = gridArray[xx, yy];
-                    if (cell != null)
-                        toClear.Add(cell);
-                }
-            }
+            AddTwoByTwoBombShockwaveOccupied(occupied, toClear, mx, my);
         }
 
         isCombo = _matchCorners.Count >= 2;
-        if (isCombo)
-        {
-            for (int i = 0; i < _matchCorners.Count; i++)
-            {
-                var (mx, my) = _matchCorners[i];
-
-                var rowsToClear = new[] { my, my + 1 };
-                var colsToClear = new[] { mx, mx + 1 };
-
-                for (int r = 0; r < rowsToClear.Length; r++)
-                {
-                    var yy = rowsToClear[r];
-                    if (yy < 0 || yy >= rows)
-                        continue;
-
-                    for (int xx = 0; xx < columns; xx++)
-                    {
-                        if (!occupied[xx, yy])
-                            continue;
-
-                        var cell = gridArray[xx, yy];
-                        if (cell != null)
-                            toClear.Add(cell);
-                    }
-                }
-
-                for (int cIdx = 0; cIdx < colsToClear.Length; cIdx++)
-                {
-                    var xx = colsToClear[cIdx];
-                    if (xx < 0 || xx >= columns)
-                        continue;
-
-                    for (int yy = 0; yy < rows; yy++)
-                    {
-                        if (!occupied[xx, yy])
-                            continue;
-
-                        var cell = gridArray[xx, yy];
-                        if (cell != null)
-                            toClear.Add(cell);
-                    }
-                }
-            }
-        }
-
         return toClear.Count > 0;
+    }
+
+    /// <summary>
+    /// Sabit 12 şablon: sol-alt (mx,my) çekirdek; yalnızca ızgarada ve occupied olanlar eklenir.
+    /// </summary>
+    void AddTwoByTwoBombShockwaveOccupied(bool[,] occupied, HashSet<GridCell> toClear, int mx, int my)
+    {
+        for (int i = 0; i < TwoByTwoBombTemplateOffsets.Length; i++)
+        {
+            var o = TwoByTwoBombTemplateOffsets[i];
+            int xx = mx + o.x;
+            int yy = my + o.y;
+
+            if (xx < 0 || xx >= columns || yy < 0 || yy >= rows)
+                continue;
+            if (!occupied[xx, yy])
+                continue;
+
+            var cell = gridArray[xx, yy];
+            if (cell != null)
+                toClear.Add(cell);
+        }
     }
 
     int ClearCellsWithTween(HashSet<GridCell> cells)
@@ -1352,6 +1360,25 @@ public sealed class GridManager : MonoBehaviour
         }
 
         return cleared;
+    }
+
+    static bool IsStrictMonochromeTwoByTwo(bool[,] occupied, Color[,] colors, int x, int y)
+    {
+        if (occupied == null || colors == null)
+            return false;
+
+        int w = occupied.GetLength(0);
+        int h = occupied.GetLength(1);
+        if (x < 0 || y < 0 || x + 1 >= w || y + 1 >= h)
+            return false;
+
+        if (!occupied[x, y] || !occupied[x + 1, y] || !occupied[x, y + 1] || !occupied[x + 1, y + 1])
+            return false;
+
+        var c = colors[x, y];
+        return SameColor(c, colors[x + 1, y]) &&
+               SameColor(c, colors[x, y + 1]) &&
+               SameColor(c, colors[x + 1, y + 1]);
     }
 
     static bool SameColor(Color a, Color b)

@@ -144,6 +144,8 @@ public sealed class ShapeDragController : MonoBehaviour, IPointerDownHandler, IB
 
         if (AudioManager.Instance != null)
             AudioManager.Instance.PlayPickUpSfx();
+
+        HapticManager.Instance?.PlayLightHaptic();
     }
 
     public void OnDrag(PointerEventData eventData)
@@ -221,7 +223,10 @@ public sealed class ShapeDragController : MonoBehaviour, IPointerDownHandler, IB
         }
 
         if (gridManager != null && _shape != null && gridManager.TryPlaceShape(_shape))
-            return; // shape sahneden silindi
+        {
+            HapticManager.Instance?.PlayLightHaptic();
+            return; // şekil sahneden silindi
+        }
 
         if (gridManager != null)
             gridManager.ClearPreview();

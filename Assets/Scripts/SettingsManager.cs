@@ -7,8 +7,6 @@ public sealed class SettingsManager : MonoBehaviour
 {
     public static SettingsManager Instance { get; private set; }
 
-    const string PrefVibration = "VIBRATION_ON";
-
     [Header("Toggle UI (sahnedeki AnimatedToggle referansları)")]
     public AnimatedToggle toggleBGM;
     public AnimatedToggle toggleSFX;
@@ -25,7 +23,7 @@ public sealed class SettingsManager : MonoBehaviour
     bool _isInitializing;
 
     public static bool AllowsScreenShakeAndHaptics =>
-        Instance == null || Instance.VibrationEnabled;
+        Instance == null || HapticManager.IsHapticEnabled;
 
     void Awake()
     {
@@ -47,7 +45,7 @@ public sealed class SettingsManager : MonoBehaviour
             SfxEnabled = PlayerPrefs.GetInt("SFX_ON", 1) == 1;
         }
 
-        VibrationEnabled = PlayerPrefs.GetInt(PrefVibration, 1) == 1;
+        VibrationEnabled = HapticManager.ReadVibrationEnabledPreference();
         HapticManager.LoadEnabledFromPrefs();
 
         SyncToggleVisuals();
@@ -59,12 +57,6 @@ public sealed class SettingsManager : MonoBehaviour
     {
         if (Instance == this)
             Instance = null;
-    }
-
-    void SaveVibration(bool value)
-    {
-        PlayerPrefs.SetInt(PrefVibration, value ? 1 : 0);
-        PlayerPrefs.Save();
     }
 
     void SyncToggleVisuals()
@@ -107,7 +99,6 @@ public sealed class SettingsManager : MonoBehaviour
             AudioManager.Instance.PlayUiClickSfx();
 
         VibrationEnabled = isOn;
-        SaveVibration(isOn);
         HapticManager.SetHapticEnabled(isOn);
     }
 
@@ -116,6 +107,6 @@ public sealed class SettingsManager : MonoBehaviour
         if (!AllowsScreenShakeAndHaptics)
             return;
 
-        HapticManager.Instance?.LightVibration();
+        HapticManager.Instance?.PlayLightHaptic();
     }
 }

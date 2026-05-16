@@ -1,3 +1,4 @@
+using System.Collections;
 using System.IO;
 using System.Threading.Tasks;
 using UnityEngine;
@@ -14,7 +15,7 @@ public sealed class TraySlotSave
     public Color tertiary;
 }
 
-/// <summary>Kök kayıt paketi (tek JsonUtility kökü).</summary>
+/// <summary>Kök kayıt paketi (tek JsonUtility kökü — düz alanlar, derin hiyerarşi yok).</summary>
 [System.Serializable]
 public sealed class SaveGameEnvelope
 {
@@ -37,19 +38,32 @@ public sealed class SaveManager : MonoBehaviour
     public const int CurrentSaveVersion = 1;
     const string FileName = "chromablocks_save.json";
 
+    /// <summary>Ekran görüntüsü / pause flapping: gereksiz ana iş parçacığı yükü.</summary>
+    const float MinSecondsBetweenSaveRequests = 2f;
+
     public static SaveManager Instance { get; private set; }
 
     static bool _restoredFromSaveThisLoad;
+
+    /// <summary>Awake'te bir kez; OnApplicationPause içinde asla <see cref="Application.persistentDataPath"/> yok.</summary>
+    static string s_cachedFullSavePath;
 
     readonly object _writeLock = new();
     bool _diskWriteInProgress;
     string _queuedJson;
     string _queuedPath;
 
+    /// <summary>Örnek başına gizli yol; <see cref="s_cachedFullSavePath"/> ile aynı içerik.</summary>
+    string _saveFileFullPath;
+
+    float _lastSuccessfulSaveRealtime = -9999f;
+
     [SerializeField] GridManager gridManager;
     [SerializeField] ShapeSpawner shapeSpawner;
 
     SaveGameEnvelope _pendingEnvelope;
+
+    Coroutine _deferredOpacityRoutine;
 
     void Awake()
     {
@@ -66,11 +80,20 @@ public sealed class SaveManager : MonoBehaviour
         if (shapeSpawner == null)
             shapeSpawner = FindAnyObjectByType<ShapeSpawner>();
 
-        _pendingEnvelope = TryReadEnvelopeFromDisk();
+        _saveFileFullPath = Path.Combine(Application.persistentDataPath, FileName);
+        s_cachedFullSavePath = _saveFileFullPath;
+
+        _pendingEnvelope = TryReadEnvelopeFromDisk(_saveFileFullPath);
     }
 
     void OnDestroy()
     {
+        if (_deferredOpacityRoutine != null)
+        {
+            StopCoroutine(_deferredOpacityRoutine);
+            _deferredOpacityRoutine = null;
+        }
+
         if (Instance == this)
             Instance = null;
     }
@@ -132,10 +155,37 @@ public sealed class SaveManager : MonoBehaviour
     {
         if (pauseStatus)
         {
+            // Kısa aralıklı pause (SS, odak kaybı): ana iş parçacığında JSON üretimini tekrarlamayı kes.
+            if (Time.realtimeSinceStartup - _lastSuccessfulSaveRealtime < MinSecondsBetweenSaveRequests)
+                return;
+
             SaveToDisk();
             return;
         }
 
+        ScheduleDeferredRefreshGameplayVisualOpacity();
+    }
+
+    void OnApplicationFocus(bool hasFocus)
+    {
+        if (hasFocus)
+            ScheduleDeferredRefreshGameplayVisualOpacity();
+    }
+
+    void ScheduleDeferredRefreshGameplayVisualOpacity()
+    {
+        if (_deferredOpacityRoutine != null)
+            StopCoroutine(_deferredOpacityRoutine);
+
+        _deferredOpacityRoutine = StartCoroutine(DeferredRefreshGameplayVisualOpacityRoutine());
+    }
+
+    /// <summary>Uyanma odağından sonra 2 frame bekle; Main Thread spike'ı azaltır.</summary>
+    IEnumerator DeferredRefreshGameplayVisualOpacityRoutine()
+    {
+        yield return null;
+        yield return null;
+        _deferredOpacityRoutine = null;
         RefreshGameplayVisualOpacity();
     }
 
@@ -164,7 +214,10 @@ public sealed class SaveManager : MonoBehaviour
     /// <summary>Harici (yeni oyun vb.) çağrılar için kayıt dosyasını siler.</summary>
     public static void DeleteSaveFile()
     {
-        var path = Path.Combine(Application.persistentDataPath, FileName);
+        var path = s_cachedFullSavePath;
+        if (string.IsNullOrEmpty(path))
+            path = Path.Combine(Application.persistentDataPath, FileName);
+
         if (File.Exists(path))
         {
             try { File.Delete(path); }
@@ -178,15 +231,14 @@ public sealed class SaveManager : MonoBehaviour
         DeleteSaveFile();
     }
 
-    SaveGameEnvelope TryReadEnvelopeFromDisk()
+    SaveGameEnvelope TryReadEnvelopeFromDisk(string fullPath)
     {
-        var path = Path.Combine(Application.persistentDataPath, FileName);
-        if (!File.Exists(path))
+        if (string.IsNullOrEmpty(fullPath) || !File.Exists(fullPath))
             return null;
 
         try
         {
-            var json = File.ReadAllText(path);
+            var json = File.ReadAllText(fullPath);
             if (string.IsNullOrWhiteSpace(json))
                 return null;
             var env = JsonUtility.FromJson<SaveGameEnvelope>(json);
@@ -220,13 +272,17 @@ public sealed class SaveManager : MonoBehaviour
     }
 
     /// <summary>
-    /// Ana thread: Unity verisini topla + JSON üret.
-    /// Arka plan: File.WriteAllText (pause / hamle sonrası).
+    /// Ana thread: Unity verisini topla + JSON üret (küçük düz paket; arka planda yaz).
     /// </summary>
     void SaveToDisk(bool waitForCompletion = false)
     {
+        if (string.IsNullOrEmpty(_saveFileFullPath))
+            return;
+
         if (!TryBuildSaveJson(out var json, out var path))
             return;
+
+        _lastSuccessfulSaveRealtime = Time.realtimeSinceStartup;
 
         if (waitForCompletion)
         {
@@ -237,11 +293,11 @@ public sealed class SaveManager : MonoBehaviour
         ScheduleAsyncDiskWrite(path, json);
     }
 
-    /// <summary>Unity API — yalnızca ana thread.</summary>
+    /// <summary>Unity API — yalnızca ana thread. path = önbelleklenmiş tam dosya yolu.</summary>
     bool TryBuildSaveJson(out string json, out string path)
     {
         json = null;
-        path = null;
+        path = _saveFileFullPath;
 
         if (gridManager == null || shapeSpawner == null)
             return false;
@@ -274,7 +330,6 @@ public sealed class SaveManager : MonoBehaviour
         try
         {
             json = JsonUtility.ToJson(env);
-            path = Path.Combine(Application.persistentDataPath, FileName);
             return !string.IsNullOrEmpty(json) && !string.IsNullOrEmpty(path);
         }
         catch (System.Exception ex)
@@ -298,12 +353,40 @@ public sealed class SaveManager : MonoBehaviour
             _diskWriteInProgress = true;
         }
 
-        var self = this;
+        RunBackgroundWriteChain(path, json);
+    }
+
+    /// <summary>Worker ipliklerinde yalnızca dosya I/O; Unity API / MonoBehaviour erişimi yok.</summary>
+    void RunBackgroundWriteChain(string path, string json)
+    {
         Task.Run(() =>
         {
             WriteJsonToDisk(path, json);
-            if (self != null)
-                self.FinishAsyncWriteCycle();
+
+            while (true)
+            {
+                string nextPath = null;
+                string nextJson = null;
+
+                lock (_writeLock)
+                {
+                    _diskWriteInProgress = false;
+
+                    if (!string.IsNullOrEmpty(_queuedJson) && !string.IsNullOrEmpty(_queuedPath))
+                    {
+                        nextPath = _queuedPath;
+                        nextJson = _queuedJson;
+                        _queuedPath = null;
+                        _queuedJson = null;
+                        _diskWriteInProgress = true;
+                    }
+                }
+
+                if (nextJson == null)
+                    break;
+
+                WriteJsonToDisk(nextPath, nextJson);
+            }
         });
     }
 
@@ -317,34 +400,5 @@ public sealed class SaveManager : MonoBehaviour
         {
             Debug.LogWarning("[SaveManager] Arka plan kayıt yazılamadı: " + ex.Message);
         }
-    }
-
-    void FinishAsyncWriteCycle()
-    {
-        string nextPath = null;
-        string nextJson = null;
-
-        lock (_writeLock)
-        {
-            _diskWriteInProgress = false;
-
-            if (!string.IsNullOrEmpty(_queuedJson) && !string.IsNullOrEmpty(_queuedPath))
-            {
-                nextPath = _queuedPath;
-                nextJson = _queuedJson;
-                _queuedPath = null;
-                _queuedJson = null;
-                _diskWriteInProgress = true;
-            }
-        }
-
-        if (nextJson == null)
-            return;
-
-        Task.Run(() =>
-        {
-            WriteJsonToDisk(nextPath, nextJson);
-            FinishAsyncWriteCycle();
-        });
     }
 }
