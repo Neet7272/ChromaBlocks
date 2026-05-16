@@ -80,13 +80,13 @@ public sealed class Shape : MonoBehaviour
 
         if (shapeData == null)
         {
-            Debug.LogError("[Shape] ShapeData is not assigned.", this);
+            DevelopmentDiagnostics.LogError("[Shape] ShapeData is not assigned.", this);
             return;
         }
 
         if (blockPrefab == null)
         {
-            Debug.LogError("[Shape] blockPrefab is not assigned.", this);
+            DevelopmentDiagnostics.LogError("[Shape] blockPrefab is not assigned.", this);
             return;
         }
 

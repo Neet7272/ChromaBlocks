@@ -144,14 +144,14 @@ public sealed class AuthManager : MonoBehaviour
 
             IsReady = AuthenticationService.Instance.IsSignedIn;
             if (IsReady)
-                Debug.Log("[Auth] Signed in. PlayerId=" + AuthenticationService.Instance.PlayerId);
+                DevelopmentDiagnostics.Log("[Auth] Signed in. PlayerId=" + AuthenticationService.Instance.PlayerId);
             else
-                Debug.LogError("[Auth] Init finished but player is not signed in.");
+                DevelopmentDiagnostics.LogError("[Auth] Init finished but player is not signed in.");
         }
         catch (Exception e)
         {
             IsReady = false;
-            Debug.LogError("[Auth] Init/SignIn failed: " + e);
+            DevelopmentDiagnostics.LogError("[Auth] Init/SignIn failed: " + e);
         }
     }
 }

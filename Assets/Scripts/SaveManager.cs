@@ -129,7 +129,7 @@ public sealed class SaveManager : MonoBehaviour
 
         var tray = new[] { _pendingEnvelope.tray0, _pendingEnvelope.tray1, _pendingEnvelope.tray2 };
         if (!shapeSpawner.RestoreTrayFromSave(tray))
-            Debug.LogWarning("[SaveManager] Tepsi kayıttan tam yüklenemedi (pool / prefab kontrolü).", this);
+            DevelopmentDiagnostics.LogWarning("[SaveManager] Tepsi kayıttan tam yüklenemedi (pool / prefab kontrolü).", this);
 
         RefreshGameplayVisualOpacity();
 
@@ -334,7 +334,7 @@ public sealed class SaveManager : MonoBehaviour
         }
         catch (System.Exception ex)
         {
-            Debug.LogWarning("[SaveManager] JSON oluşturulamadı: " + ex.Message, this);
+            DevelopmentDiagnostics.LogWarning("[SaveManager] JSON oluşturulamadı: " + ex.Message, this);
             return false;
         }
     }
@@ -398,7 +398,7 @@ public sealed class SaveManager : MonoBehaviour
         }
         catch (IOException ex)
         {
-            Debug.LogWarning("[SaveManager] Arka plan kayıt yazılamadı: " + ex.Message);
+            DevelopmentDiagnostics.LogWarning("[SaveManager] Arka plan kayıt yazılamadı: " + ex.Message);
         }
     }
 }

@@ -13,14 +13,20 @@ public sealed class UIManager : MonoBehaviour
     [SerializeField] TextMeshProUGUI hudScoreText;
     [SerializeField] GridManager gridManager;
 
+    [Header("UI Kök (boşsa Awake'te bir kez Canvas aranır)")]
+    [SerializeField] Canvas hudRootCanvas;
+
     [Header("Global dokunma partikül (bootstrap)")]
     [FormerlySerializedAs("touchFeedbackPrefabBootstrap")]
     [Tooltip("Boşsa GlobalTouchManager oluşturulmaz. Doluysa prefab DDOL manager’a verilir.")]
     public ParticleSystem touchFeedbackPrefab;
-    [SerializeField, Tooltip("Boşsa Camera.main.")]
+    [SerializeField, Tooltip("Boşsa Awake'te Camera.main bir kez cache.")]
     Camera touchFeedbackCamera;
 
     Color _hudBaseColor = Color.white;
+
+    Canvas _hudCanvas;
+    ScoreManager _scoreManager;
 
     [Header("Leaderboard (GameScene içi panel)")]
     [SerializeField] GameObject leaderboardPanel;
@@ -34,37 +40,27 @@ public sealed class UIManager : MonoBehaviour
         if (gridManager == null)
             gridManager = FindAnyObjectByType<GridManager>();
 
-        if (hudScoreText == null)
+        _hudCanvas = hudRootCanvas != null ? hudRootCanvas : FindAnyObjectByType<Canvas>();
+
+        if (hudScoreText == null && _hudCanvas != null)
         {
-            var canvas = FindAnyObjectByType<Canvas>();
-            if (canvas != null)
-            {
-                var skor = canvas.transform.Find("Skor");
-                if (skor != null)
-                    hudScoreText = skor.GetComponent<TextMeshProUGUI>();
-            }
+            var skor = _hudCanvas.transform.Find("Skor");
+            if (skor != null)
+                hudScoreText = skor.GetComponent<TextMeshProUGUI>();
         }
 
-        if (leaderboardPanel == null)
+        if (leaderboardPanel == null && _hudCanvas != null)
         {
-            var canvas = FindAnyObjectByType<Canvas>();
-            if (canvas != null)
-            {
-                var t = canvas.transform.Find("LeaderboardPanel");
-                if (t != null)
-                    leaderboardPanel = t.gameObject;
-            }
+            var t = _hudCanvas.transform.Find("LeaderboardPanel");
+            if (t != null)
+                leaderboardPanel = t.gameObject;
         }
 
-        if (settingsPanel == null)
+        if (settingsPanel == null && _hudCanvas != null)
         {
-            var canvas = FindAnyObjectByType<Canvas>();
-            if (canvas != null)
-            {
-                var t = canvas.transform.Find("SettingsPanel");
-                if (t != null)
-                    settingsPanel = t.gameObject;
-            }
+            var t = _hudCanvas.transform.Find("SettingsPanel");
+            if (t != null)
+                settingsPanel = t.gameObject;
         }
     }
 
@@ -76,11 +72,10 @@ public sealed class UIManager : MonoBehaviour
         if (leaderboardPanelPrefab == null)
             return;
 
-        var canvas = FindAnyObjectByType<Canvas>();
-        if (canvas == null)
+        if (_hudCanvas == null)
             return;
 
-        leaderboardPanel = Instantiate(leaderboardPanelPrefab, canvas.transform);
+        leaderboardPanel = Instantiate(leaderboardPanelPrefab, _hudCanvas.transform);
         leaderboardPanel.name = "LeaderboardPanel";
         leaderboardPanel.SetActive(false);
     }
@@ -104,14 +99,14 @@ public sealed class UIManager : MonoBehaviour
         if (hudScoreText != null)
             _hudBaseColor = hudScoreText.color;
 
-        var sm = ScoreManager.Instance != null ? ScoreManager.Instance : FindAnyObjectByType<ScoreManager>();
-        if (sm != null)
+        _scoreManager = ScoreManager.Instance != null ? ScoreManager.Instance : FindAnyObjectByType<ScoreManager>();
+        if (_scoreManager != null)
         {
-            if (sm.scoreText == null)
-                sm.scoreText = hudScoreText;
+            if (_scoreManager.scoreText == null)
+                _scoreManager.scoreText = hudScoreText;
             if (gridManager != null)
-                sm.SyncDisplayedScore(gridManager.CurrentScore);
-            sm.ApplyGhostLayout();
+                _scoreManager.SyncDisplayedScore(gridManager.CurrentScore);
+            _scoreManager.ApplyGhostLayout();
         }
         else if (hudScoreText != null && gridManager != null)
             hudScoreText.text = gridManager.CurrentScore.ToString();
@@ -122,7 +117,7 @@ public sealed class UIManager : MonoBehaviour
         if (hudScoreText == null || gridManager == null)
             return;
 
-        var sm = ScoreManager.Instance != null ? ScoreManager.Instance : FindAnyObjectByType<ScoreManager>();
+        var sm = _scoreManager != null ? _scoreManager : ScoreManager.Instance;
         var ghostHud = sm != null && sm.HasGhostConfigured && sm.scoreText == hudScoreText;
 
         if (scoreAdded > 0 && ghostHud)
@@ -161,7 +156,7 @@ public sealed class UIManager : MonoBehaviour
 
         if (leaderboardPanel == null)
         {
-            Debug.LogError("[UIManager] LeaderboardPanel bulunamadı. ChromaBlocks → Install Leaderboard In Game Scene menüsünü çalıştırın.", this);
+            DevelopmentDiagnostics.LogError("[UIManager] LeaderboardPanel bulunamadı. ChromaBlocks → Install Leaderboard In Game Scene menüsünü çalıştırın.", this);
             return;
         }
 
@@ -179,16 +174,7 @@ public sealed class UIManager : MonoBehaviour
     public void OpenSettings()
     {
         PlayUiClick();
-        if (settingsPanel == null)
-        {
-            var canvas = FindAnyObjectByType<Canvas>();
-            if (canvas != null)
-            {
-                var t = canvas.transform.Find("SettingsPanel");
-                if (t != null)
-                    settingsPanel = t.gameObject;
-            }
-        }
+        ResolveSettingsPanelIfNeeded();
 
         if (settingsPanel != null)
             settingsPanel.SetActive(true);
@@ -198,19 +184,20 @@ public sealed class UIManager : MonoBehaviour
     public void CloseSettings()
     {
         PlayUiClick();
-        if (settingsPanel == null)
-        {
-            var canvas = FindAnyObjectByType<Canvas>();
-            if (canvas != null)
-            {
-                var t = canvas.transform.Find("SettingsPanel");
-                if (t != null)
-                    settingsPanel = t.gameObject;
-            }
-        }
+        ResolveSettingsPanelIfNeeded();
 
         if (settingsPanel != null)
             settingsPanel.SetActive(false);
+    }
+
+    void ResolveSettingsPanelIfNeeded()
+    {
+        if (settingsPanel != null || _hudCanvas == null)
+            return;
+
+        var t = _hudCanvas.transform.Find("SettingsPanel");
+        if (t != null)
+            settingsPanel = t.gameObject;
     }
 
     static void PlayUiClick()

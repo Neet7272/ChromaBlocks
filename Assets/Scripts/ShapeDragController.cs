@@ -31,6 +31,8 @@ public sealed class ShapeDragController : MonoBehaviour, IPointerDownHandler, IB
     [Header("Grid Snapping")]
     [SerializeField] GridManager gridManager;
     [SerializeField] ShapeSpawner shapeSpawner;
+    [SerializeField, Tooltip("Boşsa Awake'te Camera.main bir kez cache'lenir; tahta başka kameradaysa buraya sürükleyin.")]
+    Camera worldCamera;
 
     [Header("Sorting")]
     [SerializeField] int dragSortingOrder = 100;
@@ -60,13 +62,21 @@ public sealed class ShapeDragController : MonoBehaviour, IPointerDownHandler, IB
 
     void Awake()
     {
-        _cam = Camera.main;
         EnsureCollider2D();
         _shape = GetComponent<Shape>();
         if (gridManager == null)
             gridManager = FindAnyObjectByType<GridManager>();
         if (shapeSpawner == null)
             shapeSpawner = FindAnyObjectByType<ShapeSpawner>();
+        CacheWorldCameraOnce();
+    }
+
+    void CacheWorldCameraOnce()
+    {
+        if (worldCamera != null)
+            _cam = worldCamera;
+        else if (_cam == null)
+            _cam = Camera.main;
     }
 
     bool IsLockedByGameOver()
@@ -166,8 +176,8 @@ public sealed class ShapeDragController : MonoBehaviour, IPointerDownHandler, IB
     {
         StopReturn();
 
-        if (_cam == null) _cam = Camera.main;
-        if (_cam == null) return;
+        if (_cam == null)
+            return;
 
         var z = transform.position.z - _cam.transform.position.z;
         var screen = new Vector3(eventData.position.x, eventData.position.y, z);
@@ -242,8 +252,8 @@ public sealed class ShapeDragController : MonoBehaviour, IPointerDownHandler, IB
 
     Vector2 ScreenToPointerWorld(PointerEventData eventData)
     {
-        if (_cam == null) _cam = Camera.main;
-        if (_cam == null) return Vector2.zero;
+        if (_cam == null)
+            return Vector2.zero;
 
         var planeZ = gridManager != null ? gridManager.transform.position.z : dragZ;
         var z = planeZ - _cam.transform.position.z;

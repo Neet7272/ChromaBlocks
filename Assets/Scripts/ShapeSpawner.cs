@@ -148,12 +148,12 @@ public sealed class ShapeSpawner : MonoBehaviour
         if (_isGameOver)
             return;
         _isGameOver = true;
-        Debug.Log("GAME OVER - YER KALMADI!");
+        DevelopmentDiagnostics.Log("GAME OVER - YER KALMADI!");
 
         if (gameOverManager != null)
             gameOverManager.EnterGameOver();
         else
-            Debug.LogError("[ShapeSpawner] GameOverManager bulunamadı — panel açılamıyor.", this);
+            DevelopmentDiagnostics.LogError("[ShapeSpawner] GameOverManager bulunamadı — panel açılamıyor.", this);
 
         GameOverStarted?.Invoke();
     }
@@ -322,25 +322,25 @@ public sealed class ShapeSpawner : MonoBehaviour
 
         if (shapePrefab == null)
         {
-            Debug.LogError("[ShapeSpawner] shapePrefab is not assigned.", this);
+            DevelopmentDiagnostics.LogError("[ShapeSpawner] shapePrefab is not assigned.", this);
             return;
         }
 
         if (blockPrefab == null)
         {
-            Debug.LogError("[ShapeSpawner] blockPrefab is not assigned.", this);
+            DevelopmentDiagnostics.LogError("[ShapeSpawner] blockPrefab is not assigned.", this);
             return;
         }
 
         if (shapePool == null || shapePool.Count == 0)
         {
-            Debug.LogError("[ShapeSpawner] shapePool is empty.", this);
+            DevelopmentDiagnostics.LogError("[ShapeSpawner] shapePool is empty.", this);
             return;
         }
 
         if (leftSpawnPoint == null || middleSpawnPoint == null || rightSpawnPoint == null)
         {
-            Debug.LogError("[ShapeSpawner] Assign all three spawn points (left/middle/right).", this);
+            DevelopmentDiagnostics.LogError("[ShapeSpawner] Assign all three spawn points (left/middle/right).", this);
             return;
         }
 
@@ -386,7 +386,7 @@ public sealed class ShapeSpawner : MonoBehaviour
     {
         if (data == null || !data.HasAnyBlocks())
         {
-            Debug.LogError("[ShapeSpawner] Geçersiz ShapeData (null veya boş). Inspector'daki shape pool'u kontrol et.", this);
+            DevelopmentDiagnostics.LogError("[ShapeSpawner] Geçersiz ShapeData (null veya boş). Inspector'daki shape pool'u kontrol et.", this);
             return null;
         }
 

@@ -45,7 +45,7 @@ public class MainMenuManager : MonoBehaviour
     {
         if (AudioManager.Instance != null)
             AudioManager.Instance.PlaySFX(AudioManager.Instance.uiClickClip);
-        Debug.Log("Play button clicked.");
+        DevelopmentDiagnostics.Log("Play button clicked.");
         SceneManager.LoadScene("GameScene");
     }
 

@@ -120,7 +120,7 @@ public sealed class HapticManager : MonoBehaviour
         }
         catch (System.Exception e)
         {
-            Debug.LogWarning($"[HapticManager] Android titreşim başarısız: {e.Message}");
+            DevelopmentDiagnostics.LogWarning($"[HapticManager] Android titreşim başarısız: {e.Message}");
         }
 #elif UNITY_IOS && !UNITY_EDITOR
         // Handheld.Vibrate() süresi OS'ta belirlenir (genelde uzun); hafif darbede kaçınıyoruz.

@@ -2128,6 +2128,7 @@ MonoBehaviour:
   m_EditorClassIdentifier: Assembly-CSharp::UIManager
   hudScoreText: {fileID: 1848744312}
   gridManager: {fileID: 716170261}
+  hudRootCanvas: {fileID: 1627860987}
   touchFeedbackPrefab: {fileID: 8373958905887851555, guid: 7312a6f130fd62249a72bc706dc2c813, type: 3}
   touchFeedbackCamera: {fileID: 0}
   leaderboardPanel: {fileID: 0}

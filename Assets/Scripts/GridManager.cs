@@ -185,7 +185,7 @@ public sealed class GridManager : MonoBehaviour
     {
         if (cellPrefab == null)
         {
-            Debug.LogError("[GridManager] cellPrefab is not assigned.", this);
+            DevelopmentDiagnostics.LogError("[GridManager] cellPrefab is not assigned.", this);
             return;
         }
 
@@ -467,7 +467,7 @@ public sealed class GridManager : MonoBehaviour
 
         if (!anyOffsets)
         {
-            Debug.LogWarning("[GridManager] CheckForAvailableMoves: aktif şekillerde blok ofseti yok (ShapeData/prefab?). Yanlış GAME OVER engellendi.", this);
+            DevelopmentDiagnostics.LogWarning("[GridManager] CheckForAvailableMoves: aktif şekillerde blok ofseti yok (ShapeData/prefab?). Yanlış GAME OVER engellendi.", this);
             return true;
         }
 

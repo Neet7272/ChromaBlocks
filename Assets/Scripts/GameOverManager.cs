@@ -90,7 +90,7 @@ public sealed class GameOverManager : MonoBehaviour
 
         if (gameOverPanel == null)
         {
-            Debug.LogError("[GameOverManager] gameOverPanel atanmamış.", this);
+            DevelopmentDiagnostics.LogError("[GameOverManager] gameOverPanel atanmamış.", this);
             return;
         }
 
@@ -121,7 +121,7 @@ public sealed class GameOverManager : MonoBehaviour
         PlayPanelIntro();
         TrySubmitScoreToLeaderboard();
 
-        Debug.Log("[GameOverManager] Panel gösterildi.");
+        DevelopmentDiagnostics.Log("[GameOverManager] Panel gösterildi.");
     }
 
     /// <summary>Başlangıçta paneli gizle — manager aynı objedeyse yalnızca alpha ile.</summary>
@@ -177,7 +177,7 @@ public sealed class GameOverManager : MonoBehaviour
     {
         if (scoreDigits == null || scoreDigits.Length < 5)
         {
-            Debug.LogWarning("[GameOverManager] scoreDigits atanmalı ve en az 5 elemanlı olmalı.", this);
+            DevelopmentDiagnostics.LogWarning("[GameOverManager] scoreDigits atanmalı ve en az 5 elemanlı olmalı.", this);
             return;
         }
 
@@ -357,7 +357,7 @@ public sealed class GameOverManager : MonoBehaviour
         }
         catch (System.Exception e)
         {
-            Debug.LogWarning("[GameOverManager] Leaderboard skor gönderimi başarısız: " + e.Message);
+            DevelopmentDiagnostics.LogWarning("[GameOverManager] Leaderboard skor gönderimi başarısız: " + e.Message);
         }
     }
 

@@ -174,7 +174,7 @@ public class LeaderboardManager : MonoBehaviour
     {
         if (newScore < 0)
         {
-            Debug.LogWarning("[Leaderboard] SubmitScore: negative score ignored.");
+            DevelopmentDiagnostics.LogWarning("[Leaderboard] SubmitScore: negative score ignored.");
             return;
         }
 
@@ -188,7 +188,7 @@ public class LeaderboardManager : MonoBehaviour
             var w = LeaderboardsService.Instance.AddPlayerScoreAsync(weeklyLeaderboardId, score, null);
             var g = LeaderboardsService.Instance.AddPlayerScoreAsync(globalLeaderboardId, score, null);
             await Task.WhenAll(w, g);
-            Debug.Log("[Leaderboard] Scores submitted to weekly & global. value=" + newScore);
+            DevelopmentDiagnostics.Log("[Leaderboard] Scores submitted to weekly & global. value=" + newScore);
 
             var active = tabController != null ? tabController.CurrentTabIndex : _defaultTab;
             active = Mathf.Clamp(active, 0, 1);
@@ -196,7 +196,7 @@ public class LeaderboardManager : MonoBehaviour
         }
         catch (Exception e)
         {
-            Debug.LogError("[Leaderboard] SubmitScore failed: " + e);
+            DevelopmentDiagnostics.LogError("[Leaderboard] SubmitScore failed: " + e);
             throw;
         }
     }
@@ -239,7 +239,7 @@ public class LeaderboardManager : MonoBehaviour
         }
         catch (Exception e)
         {
-            Debug.LogError("[Leaderboard] Refresh failed: " + e);
+            DevelopmentDiagnostics.LogError("[Leaderboard] Refresh failed: " + e);
         }
         finally
         {
