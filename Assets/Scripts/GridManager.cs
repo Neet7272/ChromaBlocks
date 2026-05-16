@@ -2,6 +2,9 @@ using System.Collections.Generic;
 using UnityEngine;
 using DG.Tweening;
 using TMPro;
+#if UNITY_EDITOR
+using UnityEditor;
+#endif
 
 /// <summary>
 /// 8x8 (veya inspector'dan verilen) grid'i üretir ve yönetir.
@@ -334,33 +337,39 @@ public sealed class GridManager : MonoBehaviour
         return nearest;
     }
 
-    public bool CanPlaceShape(Shape shape, out List<GridCell> targetCells, out GridCell anchorCell)
+    bool IsInGridBounds(int x, int y) => x >= 0 && x < columns && y >= 0 && y < rows;
+
+    GridCell GetCellAt(int x, int y)
     {
-        _placementTargetCells.Clear();
-        targetCells = _placementTargetCells;
-        anchorCell = null;
+        if (!IsInGridBounds(x, y) || gridArray == null)
+            return null;
+        return gridArray[x, y];
+    }
 
-        if (shape == null || gridArray == null) return false;
+    /// <summary>Şekil için mantıksal anchor (sol-alt köşe); kenarda kısmi taşmada bile en iyi uyumu seçer.</summary>
+    bool TryResolvePlacementAnchor(Shape shape, out Vector2Int anchor)
+    {
+        anchor = default;
 
-        var blocks = shape.Blocks;
-        if (blocks == null || blocks.Count == 0) return false;
-        if (blocks.Count > MaxShapeBlocks)
+        if (shape == null || gridArray == null)
             return false;
 
-        // Rigid yerleşim: Her blok için "en yakın hücre"yi bul,
-        // sonra offset'lerine göre olası anchor hücreyi türet ve çoğunluğun anchor'unu seç.
-        // Böylece tek bir blok şaşırsa bile şekil bütün olarak doğru yere oturur.
+        var blocks = shape.Blocks;
+        if (blocks == null || blocks.Count == 0 || blocks.Count > MaxShapeBlocks)
+            return false;
+
         _anchorVotes.Clear();
 
         for (int i = 0; i < blocks.Count; i++)
         {
             var b = blocks[i];
-            if (b.Transform == null) return false;
+            if (b.Transform == null)
+                return false;
 
             var near = GetNearestCell(b.Transform.position);
-            if (near == null) return false;
+            if (near == null)
+                return false;
 
-            // Opsiyonel mesafe kontrolü
             if (maxSnapDistance > 0f)
             {
                 var d = Vector2.Distance(near.transform.position, b.Transform.position);
@@ -374,9 +383,9 @@ public sealed class GridManager : MonoBehaviour
             _anchorVotes[impliedAnchor] = cnt + 1;
         }
 
-        // En çok oy alan anchor'u seç; eşitlikte toplam hata (distance) küçük olan kazansın.
-        Vector2Int bestAnchor = default;
+        var bestAnchor = default(Vector2Int);
         var bestVotes = -1;
+        var bestInBounds = -1;
         var bestError = float.PositiveInfinity;
 
         foreach (var kv in _anchorVotes)
@@ -384,57 +393,114 @@ public sealed class GridManager : MonoBehaviour
             var a = kv.Key;
             var votes = kv.Value;
 
+            int inBounds = 0;
             float error = 0f;
+            var invalid = false;
+
             for (int i = 0; i < blocks.Count; i++)
             {
                 var b = blocks[i];
                 var gx = a.x + b.Offset.x;
                 var gy = a.y + b.Offset.y;
 
-                if (gx < 0 || gx >= columns || gy < 0 || gy >= rows)
-                {
-                    error = float.PositiveInfinity;
-                    break;
-                }
+                if (!IsInGridBounds(gx, gy))
+                    continue;
 
-                var cell = gridArray[gx, gy];
+                inBounds++;
+
+                var cell = GetCellAt(gx, gy);
                 if (cell == null)
                 {
-                    error = float.PositiveInfinity;
+                    invalid = true;
                     break;
                 }
 
                 error += ((Vector2)cell.transform.position - (Vector2)b.Transform.position).sqrMagnitude;
             }
 
-            if (votes > bestVotes || (votes == bestVotes && error < bestError))
+            if (invalid || inBounds == 0)
+                continue;
+
+            if (votes > bestVotes ||
+                (votes == bestVotes && inBounds > bestInBounds) ||
+                (votes == bestVotes && inBounds == bestInBounds && error < bestError))
             {
                 bestVotes = votes;
+                bestInBounds = inBounds;
                 bestError = error;
                 bestAnchor = a;
             }
         }
 
-        // Seçilen anchor'a göre kesin doğrulama + target hücre listesi (blok sırası ile)
-        _placementUsedCells.Clear();
+        if (bestInBounds <= 0)
+            return false;
+
+        anchor = bestAnchor;
+        return true;
+    }
+
+    /// <summary>Önizleme: sınır içi boş hücreleri toplar; tam yerleşim mümkünse fullPlacement true.</summary>
+    bool TryCollectPreviewPlacementCells(Shape shape, Vector2Int anchor, List<GridCell> cells, out bool fullPlacement)
+    {
+        cells.Clear();
+        fullPlacement = true;
+
+        if (shape == null || gridArray == null)
+            return false;
+
+        var blocks = shape.Blocks;
+        if (blocks == null || blocks.Count == 0)
+            return false;
+
         for (int i = 0; i < blocks.Count; i++)
         {
             var b = blocks[i];
-            var gx = bestAnchor.x + b.Offset.x;
-            var gy = bestAnchor.y + b.Offset.y;
+            var gx = anchor.x + b.Offset.x;
+            var gy = anchor.y + b.Offset.y;
 
-            if (gx < 0 || gx >= columns || gy < 0 || gy >= rows)
-                return false;
+            if (!IsInGridBounds(gx, gy))
+            {
+                fullPlacement = false;
+                continue;
+            }
 
-            var cell = gridArray[gx, gy];
-            if (cell == null) return false;
-            if (cell.IsOccupied) return false;
-            if (!_placementUsedCells.Add(cell)) return false;
+            var cell = GetCellAt(gx, gy);
+            if (cell == null || cell.IsOccupied)
+            {
+                fullPlacement = false;
+                continue;
+            }
 
-            _placementTargetCells.Add(cell);
+            cells.Add(cell);
         }
 
-        anchorCell = gridArray[bestAnchor.x, bestAnchor.y];
+        return cells.Count > 0;
+    }
+
+    public bool CanPlaceShape(Shape shape, out List<GridCell> targetCells, out GridCell anchorCell)
+    {
+        _placementTargetCells.Clear();
+        targetCells = _placementTargetCells;
+        anchorCell = null;
+
+        if (!TryResolvePlacementAnchor(shape, out var anchor))
+            return false;
+
+        if (!TryCollectPreviewPlacementCells(shape, anchor, _placementTargetCells, out var fullPlacement) || !fullPlacement)
+            return false;
+
+        if (_placementTargetCells.Count != shape.Blocks.Count)
+            return false;
+
+        _placementUsedCells.Clear();
+        for (int i = 0; i < _placementTargetCells.Count; i++)
+        {
+            var cell = _placementTargetCells[i];
+            if (cell == null || !_placementUsedCells.Add(cell))
+                return false;
+        }
+
+        anchorCell = GetCellAt(anchor.x, anchor.y);
         return anchorCell != null;
     }
 
@@ -567,32 +633,6 @@ public sealed class GridManager : MonoBehaviour
         return true;
     }
 
-    /// <summary>Şeklin anchor bloğunun altındaki en yakın ızgara hücresi (tek tarama).</summary>
-    public bool TryGetShapePreviewAnchorCell(Shape shape, out int anchorX, out int anchorY)
-    {
-        anchorX = int.MinValue;
-        anchorY = int.MinValue;
-
-        if (shape == null || gridArray == null)
-            return false;
-
-        if (!shape.TryGetAnchorWorldPosition(out var world))
-        {
-            var blocks = shape.Blocks;
-            if (blocks == null || blocks.Count == 0 || blocks[0].Transform == null)
-                return false;
-            world = blocks[0].Transform.position;
-        }
-
-        var cell = GetNearestCell(world);
-        if (cell == null)
-            return false;
-
-        anchorX = cell.X;
-        anchorY = cell.Y;
-        return true;
-    }
-
     public void UpdatePlacementPreview(Shape shape, bool forceRefresh = false)
     {
         if (!enablePreview)
@@ -606,29 +646,31 @@ public sealed class GridManager : MonoBehaviour
 
         shape.RestoreBlockLayoutTransforms();
 
-        if (!TryGetShapePreviewAnchorCell(shape, out var anchorX, out var anchorY))
+        if (!TryResolvePlacementAnchor(shape, out var anchor))
         {
             if (_previewAnchorX != int.MinValue)
                 ClearPreview();
             return;
         }
 
-        if (!forceRefresh && anchorX == _previewAnchorX && anchorY == _previewAnchorY)
+        if (!forceRefresh && anchor.x == _previewAnchorX && anchor.y == _previewAnchorY)
             return;
 
-        _previewAnchorX = anchorX;
-        _previewAnchorY = anchorY;
+        _previewAnchorX = anchor.x;
+        _previewAnchorY = anchor.y;
 
         _previewClearCells.Clear();
         ResetHighlights();
 
-        if (!CanPlaceShape(shape, out var cells, out _))
+        if (!TryCollectPreviewPlacementCells(shape, anchor, _placementTargetCells, out var fullPlacement))
             return;
 
-        if (TrySimulateClearAfterPlacement(shape, cells) && _previewClearCells.Count > 0)
+        var cells = _placementTargetCells;
+
+        if (fullPlacement &&
+            TrySimulateClearAfterPlacement(shape, anchor) &&
+            _previewClearCells.Count > 0)
         {
-            // Altın kural: mavi = yalnızca 12'li şablonda VE simülasyonda dolu olan hücreler (_previewClearCells).
-            // Yerleşen şeklin şablon dışındaki parçaları asla "patlayacak" mavisiyle boyanmaz.
             foreach (var cell in _previewClearCells)
                 HighlightPredictiveClear(cell);
 
@@ -644,7 +686,10 @@ public sealed class GridManager : MonoBehaviour
         }
 
         for (int i = 0; i < cells.Count; i++)
-            HighlightPlacementHover(cells[i]);
+        {
+            if (cells[i] != null)
+                HighlightPlacementHover(cells[i]);
+        }
     }
 
     public void ClearPreview()
@@ -684,34 +729,39 @@ public sealed class GridManager : MonoBehaviour
         _highlightedCells.Add(cell);
     }
 
-    bool TrySimulateClearAfterPlacement(Shape shape, List<GridCell> targetCells)
+    bool TrySimulateClearAfterPlacement(Shape shape, Vector2Int anchor)
     {
         _previewClearCells.Clear();
-        if (gridArray == null || shape == null || targetCells == null || targetCells.Count == 0)
+        if (gridArray == null || shape == null)
             return false;
 
         if (_simOccupied == null || _simColors == null)
             EnsurePlacementScratchBuffers();
 
         CaptureGridState(_simOccupied, _simColors);
-
-        var blocks = shape.Blocks;
-        if (blocks != null && blocks.Count > 0)
-        {
-            int n = Mathf.Min(blocks.Count, targetCells.Count);
-            for (int i = 0; i < n; i++)
-            {
-                var cell = targetCells[i];
-                if (cell == null)
-                    continue;
-
-                var b = blocks[i];
-                _simOccupied[cell.X, cell.Y] = true;
-                _simColors[cell.X, cell.Y] = GetSimulatedBlockColor(b);
-            }
-        }
+        ApplySimulatedShapeAtAnchor(shape, anchor);
 
         return TryBuild2x2ClearSetFromState(_simOccupied, _simColors, _previewClearCells, out _);
+    }
+
+    void ApplySimulatedShapeAtAnchor(Shape shape, Vector2Int anchor)
+    {
+        var blocks = shape.Blocks;
+        if (blocks == null || blocks.Count == 0)
+            return;
+
+        for (int i = 0; i < blocks.Count; i++)
+        {
+            var b = blocks[i];
+            var gx = anchor.x + b.Offset.x;
+            var gy = anchor.y + b.Offset.y;
+
+            if (!IsInGridBounds(gx, gy))
+                continue;
+
+            _simOccupied[gx, gy] = true;
+            _simColors[gx, gy] = GetSimulatedBlockColor(b);
+        }
     }
 
     /// <summary>Önizleme / 2x2 kontrolü: görsel = SpriteRenderer, gerisi BlockInstance.Color.</summary>
@@ -829,19 +879,17 @@ public sealed class GridManager : MonoBehaviour
 
             if (b.Transform != null && cell != null)
             {
-                b.Transform.DOKill();
-                NormalizePlacedBlockScale(b.Transform);
-                PerfectMagnetSnap(b.Transform, cell.transform);
-                BlockColorUtils.EnsureOpaqueBlock(b.Transform, b.Color);
-                cell.SetPlacedBlock(b.Transform, BlockColorUtils.WithOpaqueAlpha(b.Color));
+                FinalizePlacedBlockOnCell(b.Transform, cell, b.Color);
                 cell.SetPreview(false);
             }
         }
 
+        RefreshAllPlacedBlockOpacity();
+
+        AudioManager.PlayPlaceSfxSafe();
+
         _shapeSpawner?.NotifyShapeConsumed(shape);
         Destroy(shape.gameObject);
-        if (AudioManager.Instance != null)
-            AudioManager.Instance.PlayPlaceSfx();
 
         if (tileCount > 0)
             AddScore(tileCount, placementPopupWorld);
@@ -913,6 +961,20 @@ public sealed class GridManager : MonoBehaviour
         return t.position;
     }
 
+    /// <summary>Yerleşik blok yok etme: tween durdur, Inspector seçimini bırak (LayoutPropertiesPreview hatası).</summary>
+    static void DestroyPlacedBlockGameObject(GameObject go)
+    {
+        if (go == null)
+            return;
+
+        go.transform.DOKill();
+#if UNITY_EDITOR
+        if (Application.isPlaying && Selection.activeGameObject == go)
+            Selection.activeGameObject = null;
+#endif
+        Destroy(go);
+    }
+
     void EnsurePlacedBlocksRoot()
     {
         if (_placedBlocksRoot != null) return;
@@ -951,7 +1013,7 @@ public sealed class GridManager : MonoBehaviour
                     continue;
 
                 occ[x, y] = true;
-                cols[x, y] = cell.PlacedColor;
+                cols[x, y] = BlockColorUtils.WithOpaqueAlpha(cell.PlacedColor);
             }
         }
 
@@ -988,10 +1050,7 @@ public sealed class GridManager : MonoBehaviour
             {
                 var child = _placedBlocksRoot.GetChild(i);
                 if (child != null)
-                {
-                    child.DOKill();
-                    Destroy(child.gameObject);
-                }
+                    DestroyPlacedBlockGameObject(child.gameObject);
             }
         }
 
@@ -1011,13 +1070,7 @@ public sealed class GridManager : MonoBehaviour
                 var go = Instantiate(blockPrefab, _placedBlocksRoot);
                 go.name = $"ReviveBlock_{x}_{y}";
 
-                var placedColor = BlockColorUtils.WithOpaqueAlpha(_traySnapshot.colors[x, y]);
-                if (go.TryGetComponent<SpriteRenderer>(out var sr))
-                    BlockColorUtils.EnsureOpaqueSprite(sr, placedColor);
-
-                NormalizePlacedBlockScale(go.transform);
-                PerfectMagnetSnap(go.transform, cell.transform);
-                cell.SetPlacedBlock(go.transform, placedColor);
+                FinalizePlacedBlockOnCell(go.transform, cell, _traySnapshot.colors[x, y]);
             }
         }
 
@@ -1051,7 +1104,7 @@ public sealed class GridManager : MonoBehaviour
                 if (cell != null && cell.IsOccupied)
                 {
                     occupied[idx] = true;
-                    colors[idx] = cell.PlacedColor;
+                    colors[idx] = BlockColorUtils.WithOpaqueAlpha(cell.PlacedColor);
                 }
                 else
                 {
@@ -1093,10 +1146,7 @@ public sealed class GridManager : MonoBehaviour
             {
                 var child = _placedBlocksRoot.GetChild(i);
                 if (child != null)
-                {
-                    child.DOKill();
-                    Destroy(child.gameObject);
-                }
+                    DestroyPlacedBlockGameObject(child.gameObject);
             }
         }
 
@@ -1135,19 +1185,28 @@ public sealed class GridManager : MonoBehaviour
                 var c = BlockColorUtils.WithOpaqueAlpha(colors[idx]);
                 var go = Instantiate(blockPrefab, _placedBlocksRoot);
                 go.name = $"SaveBlock_{x}_{y}";
-
-                if (go.TryGetComponent<SpriteRenderer>(out var sr))
-                    BlockColorUtils.EnsureOpaqueSprite(sr, c);
-
-                NormalizePlacedBlockScale(go.transform);
-                PerfectMagnetSnap(go.transform, cell.transform);
-                cell.SetPlacedBlock(go.transform, c);
+                FinalizePlacedBlockOnCell(go.transform, cell, c);
                 idx++;
             }
         }
 
         RefreshAllPlacedBlockOpacity();
         return true;
+    }
+
+    /// <summary>Yerleşik blok: snap + tüm sprite'larda alpha 1 (kayıt / yerleştirme / revive).</summary>
+    void FinalizePlacedBlockOnCell(Transform blockTransform, GridCell cell, Color placedColor)
+    {
+        if (blockTransform == null || cell == null)
+            return;
+
+        var opaque = BlockColorUtils.WithOpaqueAlpha(placedColor);
+        blockTransform.DOKill();
+        NormalizePlacedBlockScale(blockTransform);
+        PerfectMagnetSnap(blockTransform, cell.transform);
+        BlockColorUtils.EnsureOpaqueBlock(blockTransform, opaque);
+        BlockColorUtils.EnsureOpaqueHierarchy(blockTransform);
+        cell.SetPlacedBlock(blockTransform, opaque);
     }
 
     /// <summary>Patlama / kombo / pause sonrası ızgaradaki tüm blokları tam opak yap.</summary>
@@ -1170,6 +1229,7 @@ public sealed class GridManager : MonoBehaviour
 
                 var opaque = BlockColorUtils.WithOpaqueAlpha(cell.PlacedColor);
                 BlockColorUtils.EnsureOpaqueBlock(block, opaque);
+                BlockColorUtils.EnsureOpaqueHierarchy(block);
             }
         }
     }
@@ -1209,6 +1269,8 @@ public sealed class GridManager : MonoBehaviour
 
             var fxCenter = AverageWorldPosition(_cascadeClearCells);
 
+            AudioManager.PlayClearSfxSafe();
+
             var clearedCount = ClearCellsWithTween(_cascadeClearCells);
             if (clearedCount <= 0)
                 break;
@@ -1221,8 +1283,6 @@ public sealed class GridManager : MonoBehaviour
                 cameraManager = FindAnyObjectByType<CameraManager>();
             cameraManager?.ShakeStrong();
             HapticManager.Instance?.PlayHeavyHaptic();
-            if (AudioManager.Instance != null)
-                AudioManager.Instance.PlayClearSfx();
 
             var sm = ScoreManager.Instance != null ? ScoreManager.Instance : FindAnyObjectByType<ScoreManager>();
             if (sm == null || !sm.HasGhostConfigured)
@@ -1302,18 +1362,21 @@ public sealed class GridManager : MonoBehaviour
     /// </summary>
     void AddTwoByTwoBombShockwaveOccupied(bool[,] occupied, HashSet<GridCell> toClear, int mx, int my)
     {
+        if (occupied == null || gridArray == null)
+            return;
+
         for (int i = 0; i < TwoByTwoBombTemplateOffsets.Length; i++)
         {
             var o = TwoByTwoBombTemplateOffsets[i];
             int xx = mx + o.x;
             int yy = my + o.y;
 
-            if (xx < 0 || xx >= columns || yy < 0 || yy >= rows)
+            if (!IsInGridBounds(xx, yy))
                 continue;
             if (!occupied[xx, yy])
                 continue;
 
-            var cell = gridArray[xx, yy];
+            var cell = GetCellAt(xx, yy);
             if (cell != null)
                 toClear.Add(cell);
         }
@@ -1333,29 +1396,33 @@ public sealed class GridManager : MonoBehaviour
 
             cleared++;
 
-            block.DOKill();
-            if (block.TryGetComponent<SpriteRenderer>(out var clearSr))
+            var blockTransform = block;
+            var blockGo = blockTransform.gameObject;
+            var fxWorldPos = blockTransform.position;
+
+            blockTransform.DOKill();
+            if (blockTransform.TryGetComponent<SpriteRenderer>(out var clearSr))
                 BlockColorUtils.EnsureOpaqueSpriteKeepRgb(clearSr);
 
-            block.DOScale(Vector3.zero, clearShrinkDuration)
+            blockTransform.DOScale(Vector3.zero, clearShrinkDuration)
                 .SetEase(Ease.InBack)
                 .SetUpdate(true)
+                .SetLink(blockGo, LinkBehaviour.KillOnDestroy)
                 .OnComplete(() =>
                 {
-                    if (block == null)
+                    if (blockTransform == null)
                         return;
 
                     if (_blastParticlePool != null)
                     {
-                        var blastColor = blockedColor;
-                        _blastParticlePool.PlayAt(block.position, Quaternion.identity, ps =>
+                        _blastParticlePool.PlayAt(fxWorldPos, Quaternion.identity, ps =>
                         {
                             var mainModule = ps.main;
-                            mainModule.startColor = blastColor;
+                            mainModule.startColor = blockedColor;
                         });
                     }
 
-                    Destroy(block.gameObject);
+                    DestroyPlacedBlockGameObject(blockGo);
                 });
         }
 

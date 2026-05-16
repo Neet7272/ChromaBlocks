@@ -143,6 +143,7 @@ public sealed class ShapeDragController : MonoBehaviour, IPointerDownHandler, IB
         }
 
         _shape?.RestoreBlockLayoutTransforms();
+        _shape?.EnsureBlocksFullyOpaque();
 
         transform.DOScale(targetScale, pickupScaleDuration)
             .SetEase(Ease.OutQuad)
@@ -157,10 +158,9 @@ public sealed class ShapeDragController : MonoBehaviour, IPointerDownHandler, IB
             return;
 
         _shape?.RestoreBlockLayoutTransforms();
+        _shape?.EnsureBlocksFullyOpaque();
 
-        if (AudioManager.Instance != null)
-            AudioManager.Instance.PlayPickUpSfx();
-
+        AudioManager.PlayPickUpSfxSafe();
         HapticManager.Instance?.PlayLightHaptic();
     }
 
@@ -276,7 +276,11 @@ public sealed class ShapeDragController : MonoBehaviour, IPointerDownHandler, IB
         seq.Append(transform.DOMove(target, returnDuration * 0.55f).SetEase(Ease.OutBounce));
         seq.Join(transform.DOScale(_spawnLocalScale, returnDuration).SetEase(Ease.OutBounce));
         seq.OnUpdate(() => _shape?.RestoreBlockLayoutTransforms());
-        seq.OnComplete(() => _shape?.RestoreBlockLayoutTransforms());
+        seq.OnComplete(() =>
+        {
+            _shape?.RestoreBlockLayoutTransforms();
+            _shape?.EnsureBlocksFullyOpaque();
+        });
     }
 
     void StopReturn()

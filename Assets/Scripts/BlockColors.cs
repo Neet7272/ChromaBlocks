@@ -65,16 +65,23 @@ public static class BlockColorUtils
             EnsureOpaqueSpriteKeepRgb(renderers[i]);
     }
 
+    /// <summary>Kök + tüm child SpriteRenderer: alpha 1 ve verilen renk (hayalet önleme).</summary>
     public static void EnsureOpaqueBlock(Transform block, Color color)
     {
         if (block == null)
             return;
 
         block.DOKill();
-        if (block.TryGetComponent<SpriteRenderer>(out var sr))
-            EnsureOpaqueSprite(sr, color);
-        else
-            EnsureOpaqueHierarchy(block);
+        var opaque = WithOpaqueAlpha(color);
+        var renderers = block.GetComponentsInChildren<SpriteRenderer>(true);
+        if (renderers.Length > 0)
+        {
+            for (int i = 0; i < renderers.Length; i++)
+                EnsureOpaqueSprite(renderers[i], opaque);
+            return;
+        }
+
+        EnsureOpaqueHierarchy(block);
     }
 }
 

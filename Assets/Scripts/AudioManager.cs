@@ -1,8 +1,9 @@
 using UnityEngine;
+using UnityEngine.SceneManagement;
 
 /// <summary>
-/// Kalıcı tekil ses yöneticisi. AudioSource'lar yalnızca bu objenin child'ı olarak yaşar;
-/// sahneye bağlı "Menu Audio Source" gibi referanslar otomatik taşınır.
+/// Kalıcı tekil ses yöneticisi. Tüm kısa SFX, DDOL <see cref="sfxSource"/> üzerinden PlayOneShot ile çalar;
+/// blok/shape Destroy edilse bile ses kesilmez.
 /// </summary>
 [DefaultExecutionOrder(-200)]
 public sealed class AudioManager : MonoBehaviour
@@ -26,6 +27,9 @@ public sealed class AudioManager : MonoBehaviour
     public AudioClip clearClip;
     public AudioClip uiClickClip;
 
+    [Header("SFX")]
+    [SerializeField, Range(0f, 1f)] float sfxVolume = 1f;
+
     public bool BgmEnabled { get; private set; } = true;
     public bool SfxEnabled { get; private set; } = true;
 
@@ -47,10 +51,40 @@ public sealed class AudioManager : MonoBehaviour
             Destroy(gameObject);
     }
 
+    void OnEnable()
+    {
+        SceneManager.sceneLoaded += OnSceneLoaded;
+    }
+
+    void OnDisable()
+    {
+        SceneManager.sceneLoaded -= OnSceneLoaded;
+    }
+
     void OnDestroy()
     {
         if (Instance == this)
             Instance = null;
+    }
+
+    void OnSceneLoaded(Scene scene, LoadSceneMode mode)
+    {
+        if (Instance != this)
+            return;
+
+        EnsurePersistentSources();
+        ApplyMuteState();
+        if (BgmEnabled)
+            StartBGM();
+    }
+
+    void OnApplicationFocus(bool hasFocus)
+    {
+        if (!hasFocus || Instance != this)
+            return;
+
+        EnsurePersistentSources();
+        ApplyMuteState();
     }
 
     void LoadAndApplyPreferences()
@@ -96,6 +130,11 @@ public sealed class AudioManager : MonoBehaviour
         ApplyMuteState();
     }
 
+    static bool IsValidChildSource(AudioSource source, Transform root)
+    {
+        return source != null && source.transform.IsChildOf(root);
+    }
+
     void EnsurePersistentSources()
     {
         bgmSource = EnsureChildSource(
@@ -112,10 +151,30 @@ public sealed class AudioManager : MonoBehaviour
             defaultClip: null,
             onClipResolved: null);
 
-        bgmSource.playOnAwake = false;
-        sfxSource.playOnAwake = false;
-        bgmSource.volume = 1f;
-        sfxSource.volume = 1f;
+        if (bgmSource != null)
+        {
+            bgmSource.playOnAwake = false;
+            bgmSource.volume = 1f;
+            bgmSource.spatialBlend = 0f;
+        }
+
+        if (sfxSource != null)
+        {
+            ApplySfxSourceDefaults(sfxSource);
+        }
+    }
+
+    static void ApplySfxSourceDefaults(AudioSource source)
+    {
+        if (source == null)
+            return;
+
+        source.playOnAwake = false;
+        source.loop = false;
+        source.spatialBlend = 0f;
+        source.ignoreListenerPause = true;
+        source.bypassListenerEffects = true;
+        source.volume = 1f;
     }
 
     AudioSource EnsureChildSource(
@@ -125,10 +184,12 @@ public sealed class AudioManager : MonoBehaviour
         AudioClip defaultClip,
         System.Action<AudioClip> onClipResolved)
     {
-        if (inspectorSource != null && inspectorSource.transform.IsChildOf(transform))
+        if (IsValidChildSource(inspectorSource, transform))
         {
             inspectorSource.loop = loop;
             inspectorSource.playOnAwake = false;
+            if (!loop)
+                ApplySfxSourceDefaults(inspectorSource);
             return inspectorSource;
         }
 
@@ -172,6 +233,10 @@ public sealed class AudioManager : MonoBehaviour
         child.playOnAwake = false;
         child.mute = savedMute;
         child.volume = savedVolume;
+        child.spatialBlend = 0f;
+
+        if (!loop)
+            ApplySfxSourceDefaults(child);
 
         if (loop && bgmClip != null)
             child.clip = bgmClip;
@@ -188,10 +253,21 @@ public sealed class AudioManager : MonoBehaviour
         return child;
     }
 
+    void EnsureSfxSourceReady()
+    {
+        if (IsValidChildSource(sfxSource, transform))
+        {
+            ApplySfxSourceDefaults(sfxSource);
+            return;
+        }
+
+        EnsurePersistentSources();
+    }
+
     /// <summary>BGM zaten çalıyorsa dokunmaz.</summary>
     public void StartBGM()
     {
-        if (bgmSource == null)
+        if (!IsValidChildSource(bgmSource, transform))
             EnsurePersistentSources();
 
         if (bgmSource == null || bgmClip == null || !BgmEnabled)
@@ -207,40 +283,35 @@ public sealed class AudioManager : MonoBehaviour
         bgmSource.Play();
     }
 
-    public void PlaySFX(AudioClip clip)
+    /// <summary>Merkezi kısa efekt — yalnızca DDOL SFX_Source PlayOneShot.</summary>
+    public void PlaySFX(AudioClip clip, float volumeScale = 1f)
     {
         if (clip == null || !SfxEnabled)
             return;
 
-        if (sfxSource == null)
-            EnsurePersistentSources();
+        EnsureSfxSourceReady();
 
-        if (sfxSource == null)
+        if (!IsValidChildSource(sfxSource, transform))
             return;
 
         if (sfxSource.mute)
             return;
 
-        sfxSource.PlayOneShot(clip);
+        var vol = Mathf.Clamp01(sfxVolume) * Mathf.Clamp01(volumeScale);
+        sfxSource.PlayOneShot(clip, vol);
     }
 
-    public void PlayPickUpSfx()
-    {
-        PlaySFX(pickUpClip != null ? pickUpClip : uiClickClip);
-    }
+    public void PlayPickUpSfx() => PlaySFX(pickUpClip != null ? pickUpClip : uiClickClip);
 
-    public void PlayPlaceSfx()
-    {
-        PlaySFX(placeClip);
-    }
+    public void PlayPlaceSfx() => PlaySFX(placeClip != null ? placeClip : uiClickClip);
 
-    public void PlayClearSfx()
-    {
-        PlaySFX(clearClip);
-    }
+    public void PlayClearSfx() => PlaySFX(clearClip != null ? clearClip : uiClickClip);
 
-    public void PlayUiClickSfx()
-    {
-        PlaySFX(uiClickClip);
-    }
+    public void PlayUiClickSfx() => PlaySFX(uiClickClip);
+
+    public static void PlayPlaceSfxSafe() => Instance?.PlayPlaceSfx();
+
+    public static void PlayClearSfxSafe() => Instance?.PlayClearSfx();
+
+    public static void PlayPickUpSfxSafe() => Instance?.PlayPickUpSfx();
 }

@@ -132,6 +132,7 @@ public sealed class SaveManager : MonoBehaviour
             DevelopmentDiagnostics.LogWarning("[SaveManager] Tepsi kayıttan tam yüklenemedi (pool / prefab kontrolü).", this);
 
         RefreshGameplayVisualOpacity();
+        ScheduleDeferredRefreshGameplayVisualOpacity();
 
         _pendingEnvelope = null;
         _restoredFromSaveThisLoad = true;

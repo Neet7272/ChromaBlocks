@@ -2160,9 +2160,25 @@ PrefabInstance:
     serializedVersion: 3
     m_TransformParent: {fileID: 1627860988}
     m_Modifications:
+    - target: {fileID: 3771702166076773646, guid: fcf6be3e379920440bd501f28b81cf00, type: 3}
+      propertyPath: m_OnClick.m_PersistentCalls.m_Calls.Array.data[0].m_Target
+      value: 
+      objectReference: {fileID: 1627860989}
+    - target: {fileID: 3771702166076773646, guid: fcf6be3e379920440bd501f28b81cf00, type: 3}
+      propertyPath: m_OnClick.m_PersistentCalls.m_Calls.Array.data[0].m_MethodName
+      value: CloseSettings
+      objectReference: {fileID: 0}
+    - target: {fileID: 3771702166076773646, guid: fcf6be3e379920440bd501f28b81cf00, type: 3}
+      propertyPath: m_OnClick.m_PersistentCalls.m_Calls.Array.data[0].m_TargetAssemblyTypeName
+      value: UIManager, Assembly-CSharp
+      objectReference: {fileID: 0}
     - target: {fileID: 3838302569567292804, guid: fcf6be3e379920440bd501f28b81cf00, type: 3}
       propertyPath: m_AnchoredPosition.x
-      value: 385
+      value: -159
+      objectReference: {fileID: 0}
+    - target: {fileID: 3838302569567292804, guid: fcf6be3e379920440bd501f28b81cf00, type: 3}
+      propertyPath: m_AnchoredPosition.y
+      value: 365
       objectReference: {fileID: 0}
     - target: {fileID: 6079092664528607018, guid: fcf6be3e379920440bd501f28b81cf00, type: 3}
       propertyPath: m_Pivot.x
