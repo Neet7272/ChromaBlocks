@@ -39,6 +39,12 @@ public sealed class ShapeDragController : MonoBehaviour, IPointerDownHandler, IB
     [Header("Depth (Z)")]
     [SerializeField] float dragZ = -1f;
 
+    [Header("Touch — sadece hitbox (görsel / snap / grid değişmez)")]
+    [SerializeField, Min(0f), Tooltip("Sprite sınırına eklenen yerel XY tampon (her yöne yarısı). Tüm şekillere uygulanır.")]
+    float touchHitboxPaddingLocal = 0.2f;
+    [SerializeField, Min(1f), Tooltip("1x1 vb. tek blokta padding çarpanı (kalın parmak).")]
+    float singleBlockHitboxPaddingMultiplier = 2.9f;
+
     Camera _cam;
     Vector3 _spawnWorldPos;
     Vector3 _spawnLocalScale;
@@ -283,8 +289,7 @@ public sealed class ShapeDragController : MonoBehaviour, IPointerDownHandler, IB
     }
 
     /// <summary>
-    /// Tüm child SpriteRenderer'ları gezip bounds.Encapsulate ile toplam sınırları bulur,
-    /// BoxCollider2D'nin size/offset değerlerini tüm şekli kapsayacak şekilde ayarlar.
+    /// Child sprite AABB'sine göre BoxCollider2D; görseli değiştirmeden dokunma için yerel padding ekler.
     /// </summary>
     public void UpdateColliderBounds()
     {
@@ -293,7 +298,8 @@ public sealed class ShapeDragController : MonoBehaviour, IPointerDownHandler, IB
         var renderers = GetComponentsInChildren<SpriteRenderer>();
         if (renderers == null || renderers.Length == 0)
         {
-            _box.size = Vector2.one;
+            var pad = GetTouchPaddingHalfExtents();
+            _box.size = Vector2.one + pad * 2f;
             _box.offset = Vector2.zero;
             return;
         }
@@ -309,8 +315,18 @@ public sealed class ShapeDragController : MonoBehaviour, IPointerDownHandler, IB
         var localMin = new Vector2(Mathf.Min(localMin3.x, localMax3.x), Mathf.Min(localMin3.y, localMax3.y));
         var localMax = new Vector2(Mathf.Max(localMin3.x, localMax3.x), Mathf.Max(localMin3.y, localMax3.y));
 
+        var padHalf = GetTouchPaddingHalfExtents();
         _box.offset = (localMin + localMax) * 0.5f;
-        _box.size = (localMax - localMin);
+        _box.size = (localMax - localMin) + padHalf * 2f;
+    }
+
+    /// <summary>Yerelde simetrik padding; tek bloklu şekillerde çarpan (görsel boyut aynı).</summary>
+    Vector2 GetTouchPaddingHalfExtents()
+    {
+        float m = touchHitboxPaddingLocal;
+        if (_shape != null && _shape.Blocks != null && _shape.Blocks.Count <= 1)
+            m *= singleBlockHitboxPaddingMultiplier;
+        return new Vector2(m, m);
     }
 
     void CacheRenderers()
