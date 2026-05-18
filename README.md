@@ -1,2 +1,3 @@
 # ChromaBlocks
-
+Chroma Blocks, renk eşleştirmeyi ve alan yönetimini birleştiren yenilikçi bir mobil blok bulmaca oyunudur. Oyuncular, tepsiden aldıkları farklı şekillerdeki blokları ızgaraya yerleştirerek aynı renkten 2x2'lik bir çekirdek oluşturmaya çalışırlar. Bu çekirdek tamamlandığında, tahtada 12 hücreyi temizleyen devasa bir 'Artı (+)' şok dalgası tetiklenir. Amaç, mat ve pürüzsüz estetiğin tadını çıkarırken ızgarayı kilitlemeden en yüksek skora ulaşmaktır.
+Oynanabilirik olarak şu an bir sorunu yok ama bana göre Şu an ki eksikleri: leaderboard ın tam olarak bağlanmaması ve panelindeki kötü görünüm , reklam kısmının eklenmemiş olması , uı olarak bazı yerlerde daha iyleştirmeler bunları da bir sonraki güncellememde yapıp yayınlamayı düşünüyorum
