@@ -18,13 +18,11 @@ public sealed class ShapeDragController : MonoBehaviour, IPointerDownHandler, IB
     [SerializeField, Min(0.01f)] float returnDuration = 0.22f;
 
     [Header("Scale")]
-    [SerializeField] Vector3 heldScale = new Vector3(1f, 1f, 1f);
+    [SerializeField, Tooltip("Tahta boyutuna ek çarpan (1 = tahtadaki blokla birebir).")]
+    Vector3 heldScale = Vector3.one;
     [SerializeField] bool scaleToGridCellSize = true;
-    [SerializeField, Tooltip("İstersen hedefi (cell size + spacing) kabul etsin. Genelde kapalı kalmalı.")]
-    bool includeSpacingInHeldScale = false;
 
     [Header("Tween Timings")]
-    [SerializeField, Min(0.01f)] float pickupScaleDuration = 0.15f;
     [SerializeField, Range(0f, 1f), Tooltip("0 = anında takip; yüksek = yumuşak Lerp.")]
     float dragFollowLerp = 0.35f;
 
@@ -42,8 +40,12 @@ public sealed class ShapeDragController : MonoBehaviour, IPointerDownHandler, IB
     [SerializeField] float dragZ = -1f;
 
     [Header("Touch — sadece hitbox (görsel / snap / grid değişmez)")]
-    [SerializeField, Min(0f), Tooltip("Sprite sınırına eklenen yerel XY tampon (her yöne yarısı). Tüm şekillere uygulanır.")]
-    float touchHitboxPaddingLocal = 0.2f;
+    [SerializeField, Min(0f), Tooltip("Sprite sınırına eklenen yerel tampon (komşu şekle taşmaz).")]
+    float touchHitboxPaddingLocal = 0.42f;
+    [SerializeField, Min(1f), Tooltip("Dış kenarlara (üst/alt/dış yan) ekstra genişlik çarpanı.")]
+    float touchHitboxOuterPaddingMultiplier = 1.65f;
+    [SerializeField, Min(0f), Tooltip("Komşu tepsi şekli arasında bırakılan dünya boşluğu.")]
+    float touchHitboxNeighborGapWorld = 0.12f;
     [SerializeField, Min(1f), Tooltip("1x1 vb. tek blokta padding çarpanı (kalın parmak).")]
     float singleBlockHitboxPaddingMultiplier = 2.9f;
 
@@ -77,6 +79,22 @@ public sealed class ShapeDragController : MonoBehaviour, IPointerDownHandler, IB
             _cam = worldCamera;
         else if (_cam == null)
             _cam = Camera.main;
+    }
+
+    /// <summary>Tahtaya konan blokla aynı intrinsic ölçek (GridManager.NormalizePlacedBlockScale).</summary>
+    Vector3 ComputeHeldDragScale()
+    {
+        if (scaleToGridCellSize && gridManager != null &&
+            gridManager.TryGetHeldShapeLocalScale(transform, out var boardScale))
+        {
+            var hx = heldScale.x > 0f ? heldScale.x : 1f;
+            var hy = heldScale.y > 0f ? heldScale.y : 1f;
+            return new Vector3(boardScale.x * hx, boardScale.y * hy, 1f);
+        }
+
+        float trayU = Mathf.Max(_spawnLocalScale.x, _spawnLocalScale.y);
+        float mult = Mathf.Max(heldScale.x, heldScale.y, 1f);
+        return Vector3.one * (trayU * mult);
     }
 
     bool IsLockedByGameOver()
@@ -125,29 +143,14 @@ public sealed class ShapeDragController : MonoBehaviour, IPointerDownHandler, IB
         p.z = dragZ;
         transform.position = p;
 
-        var targetScale = _spawnLocalScale;
-        if (scaleToGridCellSize && gridManager != null && _shape != null &&
-            _shape.TryGetBlockPrefabWorldSize(out var blockPrefabSize) &&
-            gridManager.CellWorldSize.x > 0f && gridManager.CellWorldSize.y > 0f)
-        {
-            var target = gridManager.CellWorldSize;
-            if (includeSpacingInHeldScale)
-                target += new Vector2(gridManager.Spacing, gridManager.Spacing);
-
-            var sx = target.x / blockPrefabSize.x;
-            var sy = target.y / blockPrefabSize.y;
-            var uniform = Mathf.Max(sx, sy);
-
-            // Izgara hücresi boyutu (tepsi 0.6 ile çarpma — yoksa bloklar küçük kalır)
-            targetScale = new Vector3(uniform, uniform, 1f);
-        }
+        var targetScale = ComputeHeldDragScale();
 
         _shape?.RestoreBlockLayoutTransforms();
         _shape?.EnsureBlocksFullyOpaque();
 
-        transform.DOScale(targetScale, pickupScaleDuration)
-            .SetEase(Ease.OutQuad)
-            .OnUpdate(OnDragScaleTweenUpdate);
+        transform.DOKill();
+        transform.localScale = targetScale;
+        _shape?.RestoreBlockLayoutTransforms();
 
         ApplyDragMoveAndPreview(eventData, forcePreview: true);
     }
@@ -157,6 +160,8 @@ public sealed class ShapeDragController : MonoBehaviour, IPointerDownHandler, IB
         if (IsInputLocked())
             return;
 
+        transform.DOKill();
+        transform.localScale = ComputeHeldDragScale();
         _shape?.RestoreBlockLayoutTransforms();
         _shape?.EnsureBlocksFullyOpaque();
 
@@ -195,11 +200,6 @@ public sealed class ShapeDragController : MonoBehaviour, IPointerDownHandler, IB
 
         if (gridManager != null && _shape != null)
             gridManager.UpdatePlacementPreview(_shape, forcePreview);
-    }
-
-    void OnDragScaleTweenUpdate()
-    {
-        _shape?.RestoreBlockLayoutTransforms();
     }
 
     void KillChildBlockTweens()
@@ -310,31 +310,153 @@ public sealed class ShapeDragController : MonoBehaviour, IPointerDownHandler, IB
         EnsureCollider2D();
 
         var renderers = GetComponentsInChildren<SpriteRenderer>();
+        Vector2 localMin;
+        Vector2 localMax;
+
         if (renderers == null || renderers.Length == 0)
         {
-            var pad = GetTouchPaddingHalfExtents();
-            _box.size = Vector2.one + pad * 2f;
-            _box.offset = Vector2.zero;
-            return;
+            localMin = new Vector2(-0.5f, -0.5f);
+            localMax = new Vector2(0.5f, 0.5f);
+        }
+        else
+        {
+            var combined = renderers[0].bounds;
+            for (int i = 1; i < renderers.Length; i++)
+                combined.Encapsulate(renderers[i].bounds);
+
+            var localMin3 = transform.InverseTransformPoint(combined.min);
+            var localMax3 = transform.InverseTransformPoint(combined.max);
+
+            localMin = new Vector2(Mathf.Min(localMin3.x, localMax3.x), Mathf.Min(localMin3.y, localMax3.y));
+            localMax = new Vector2(Mathf.Max(localMin3.x, localMax3.x), Mathf.Max(localMin3.y, localMax3.y));
         }
 
-        var combined = renderers[0].bounds; // world-space AABB
-        for (int i = 1; i < renderers.Length; i++)
-            combined.Encapsulate(renderers[i].bounds);
+        ApplyDirectionalTouchPadding(ref localMin, ref localMax);
 
-        // World bounds -> local bounds (min/max köşelerini local'e çevirerek)
-        var localMin3 = transform.InverseTransformPoint(combined.min);
-        var localMax3 = transform.InverseTransformPoint(combined.max);
-
-        var localMin = new Vector2(Mathf.Min(localMin3.x, localMax3.x), Mathf.Min(localMin3.y, localMax3.y));
-        var localMax = new Vector2(Mathf.Max(localMin3.x, localMax3.x), Mathf.Max(localMin3.y, localMax3.y));
-
-        var padHalf = GetTouchPaddingHalfExtents();
         _box.offset = (localMin + localMax) * 0.5f;
-        _box.size = (localMax - localMin) + padHalf * 2f;
+        _box.size = localMax - localMin;
     }
 
-    /// <summary>Yerelde simetrik padding; tek bloklu şekillerde çarpan (görsel boyut aynı).</summary>
+    void ApplyDirectionalTouchPadding(ref Vector2 localMin, ref Vector2 localMax)
+    {
+        var padHalf = GetTouchPaddingHalfExtents();
+        var extraOuter = padHalf * Mathf.Max(0f, touchHitboxOuterPaddingMultiplier - 1f);
+
+        localMin -= padHalf;
+        localMax += padHalf;
+
+        localMin.y -= extraOuter.y;
+        localMax.y += extraOuter.y;
+
+        switch (ResolveTraySlot())
+        {
+            case TraySlot.Left:
+                localMin.x -= extraOuter.x;
+                ClampLocalMaxXToWorldX(ref localMax, GetNeighborMaxWorldX(TraySlot.Left));
+                break;
+            case TraySlot.Right:
+                localMax.x += extraOuter.x;
+                ClampLocalMinXToWorldX(ref localMin, GetNeighborMinWorldX(TraySlot.Right));
+                break;
+            default:
+                ClampLocalMaxXToWorldX(ref localMax, GetNeighborMaxWorldX(TraySlot.Middle));
+                ClampLocalMinXToWorldX(ref localMin, GetNeighborMinWorldX(TraySlot.Middle));
+                break;
+        }
+    }
+
+    enum TraySlot
+    {
+        Left,
+        Middle,
+        Right
+    }
+
+    TraySlot ResolveTraySlot()
+    {
+        if (shapeSpawner == null ||
+            shapeSpawner.LeftSpawnPoint == null ||
+            shapeSpawner.MiddleSpawnPoint == null ||
+            shapeSpawner.RightSpawnPoint == null)
+            return TraySlot.Middle;
+
+        var x = transform.position.x;
+        var lx = shapeSpawner.LeftSpawnPoint.position.x;
+        var mx = shapeSpawner.MiddleSpawnPoint.position.x;
+        var rx = shapeSpawner.RightSpawnPoint.position.x;
+
+        if (Mathf.Abs(x - lx) <= Mathf.Abs(x - mx) && Mathf.Abs(x - lx) <= Mathf.Abs(x - rx))
+            return TraySlot.Left;
+        if (Mathf.Abs(x - rx) <= Mathf.Abs(x - mx))
+            return TraySlot.Right;
+        return TraySlot.Middle;
+    }
+
+    float GetNeighborMaxWorldX(TraySlot slot)
+    {
+        var gap = touchHitboxNeighborGapWorld;
+        if (shapeSpawner == null || shapeSpawner.MiddleSpawnPoint == null)
+            return float.PositiveInfinity;
+
+        if (slot == TraySlot.Left)
+        {
+            var left = shapeSpawner.LeftSpawnPoint != null
+                ? shapeSpawner.LeftSpawnPoint.position.x
+                : transform.position.x;
+            var mid = shapeSpawner.MiddleSpawnPoint.position.x;
+            return (left + mid) * 0.5f - gap;
+        }
+
+        if (shapeSpawner.RightSpawnPoint == null)
+            return float.PositiveInfinity;
+
+        var center = shapeSpawner.MiddleSpawnPoint.position.x;
+        var right = shapeSpawner.RightSpawnPoint.position.x;
+        return (center + right) * 0.5f - gap;
+    }
+
+    float GetNeighborMinWorldX(TraySlot slot)
+    {
+        var gap = touchHitboxNeighborGapWorld;
+        if (shapeSpawner == null || shapeSpawner.MiddleSpawnPoint == null)
+            return float.NegativeInfinity;
+
+        if (slot == TraySlot.Right)
+        {
+            var mid = shapeSpawner.MiddleSpawnPoint.position.x;
+            var right = shapeSpawner.RightSpawnPoint != null
+                ? shapeSpawner.RightSpawnPoint.position.x
+                : transform.position.x;
+            return (mid + right) * 0.5f + gap;
+        }
+
+        if (shapeSpawner.LeftSpawnPoint == null)
+            return float.NegativeInfinity;
+
+        var left = shapeSpawner.LeftSpawnPoint.position.x;
+        var center = shapeSpawner.MiddleSpawnPoint.position.x;
+        return (left + center) * 0.5f + gap;
+    }
+
+    void ClampLocalMaxXToWorldX(ref Vector2 localMax, float worldMaxX)
+    {
+        if (float.IsPositiveInfinity(worldMaxX))
+            return;
+
+        var localLimit = transform.InverseTransformPoint(new Vector3(worldMaxX, transform.position.y, transform.position.z)).x;
+        localMax.x = Mathf.Min(localMax.x, localLimit);
+    }
+
+    void ClampLocalMinXToWorldX(ref Vector2 localMin, float worldMinX)
+    {
+        if (float.IsNegativeInfinity(worldMinX))
+            return;
+
+        var localLimit = transform.InverseTransformPoint(new Vector3(worldMinX, transform.position.y, transform.position.z)).x;
+        localMin.x = Mathf.Max(localMin.x, localLimit);
+    }
+
+    /// <summary>Yerelde taban padding; tek bloklu şekillerde çarpan (görsel boyut aynı).</summary>
     Vector2 GetTouchPaddingHalfExtents()
     {
         float m = touchHitboxPaddingLocal;

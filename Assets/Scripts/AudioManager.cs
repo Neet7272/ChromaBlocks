@@ -309,6 +309,24 @@ public sealed class AudioManager : MonoBehaviour
 
     public void PlayUiClickSfx() => PlaySFX(uiClickClip);
 
+    /// <summary>Ayar toggle vb.: SFX kapalı olsa bile son tıklama sesi (PlayOneShot).</summary>
+    public void PlayUiClickSfxForced()
+    {
+        if (uiClickClip == null)
+            return;
+
+        EnsureSfxSourceReady();
+
+        if (!IsValidChildSource(sfxSource, transform))
+            return;
+
+        var wasMuted = sfxSource.mute;
+        sfxSource.mute = false;
+        var vol = Mathf.Clamp01(sfxVolume);
+        sfxSource.PlayOneShot(uiClickClip, vol);
+        sfxSource.mute = wasMuted;
+    }
+
     public static void PlayPlaceSfxSafe() => Instance?.PlayPlaceSfx();
 
     public static void PlayClearSfxSafe() => Instance?.PlayClearSfx();

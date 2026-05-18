@@ -2,6 +2,7 @@ using System.Collections;
 using System.IO;
 using System.Threading.Tasks;
 using UnityEngine;
+using UnityEngine.SceneManagement;
 
 /// <summary>Tepsi slotu — JsonUtility uyumlu düz alanlar.</summary>
 [System.Serializable]
@@ -103,16 +104,53 @@ public sealed class SaveManager : MonoBehaviour
         if (_pendingEnvelope == null)
             return;
 
+        if (!TryApplyPendingSaveSynchronously())
+            return;
+
+        StartCoroutine(PostLoadOpacityPassRoutine());
+    }
+
+    void OnEnable()
+    {
+        SceneManager.sceneLoaded += OnSceneLoaded;
+        if (gridManager != null)
+            gridManager.OnBoardSettled += HandleBoardSettledSave;
+    }
+
+    void OnDisable()
+    {
+        SceneManager.sceneLoaded -= OnSceneLoaded;
+        if (gridManager != null)
+            gridManager.OnBoardSettled -= HandleBoardSettledSave;
+    }
+
+    void OnSceneLoaded(Scene scene, LoadSceneMode mode)
+    {
+        if (gridManager == null)
+            gridManager = FindAnyObjectByType<GridManager>();
+        if (shapeSpawner == null)
+            shapeSpawner = FindAnyObjectByType<ShapeSpawner>();
+
+        if (scene.name == "GameScene")
+            ScheduleDeferredRefreshGameplayVisualOpacity();
+    }
+
+    /// <summary>ShapeSpawner.Start (200) öncesi: ızgara + tepsi senkron yüklenir.</summary>
+    bool TryApplyPendingSaveSynchronously()
+    {
+        if (_pendingEnvelope == null)
+            return false;
+
         if (gridManager == null || shapeSpawner == null)
         {
             _pendingEnvelope = null;
-            return;
+            return false;
         }
 
         if (!ValidateEnvelopeAgainstScene(_pendingEnvelope, gridManager))
         {
             _pendingEnvelope = null;
-            return;
+            return false;
         }
 
         if (!gridManager.ApplyGridStateFromSave(
@@ -122,7 +160,7 @@ public sealed class SaveManager : MonoBehaviour
                 _pendingEnvelope.gridColors))
         {
             _pendingEnvelope = null;
-            return;
+            return false;
         }
 
         gridManager.SetScoreAndComboForLoad(_pendingEnvelope.score, _pendingEnvelope.comboMultiplier);
@@ -131,23 +169,22 @@ public sealed class SaveManager : MonoBehaviour
         if (!shapeSpawner.RestoreTrayFromSave(tray))
             DevelopmentDiagnostics.LogWarning("[SaveManager] Tepsi kayıttan tam yüklenemedi (pool / prefab kontrolü).", this);
 
-        RefreshGameplayVisualOpacity();
-        ScheduleDeferredRefreshGameplayVisualOpacity();
-
         _pendingEnvelope = null;
         _restoredFromSaveThisLoad = true;
+
+        ForceAllGameplayBlocksOpaque();
+        return true;
     }
 
-    void OnEnable()
+    IEnumerator PostLoadOpacityPassRoutine()
     {
-        if (gridManager != null)
-            gridManager.OnBoardSettled += HandleBoardSettledSave;
-    }
-
-    void OnDisable()
-    {
-        if (gridManager != null)
-            gridManager.OnBoardSettled -= HandleBoardSettledSave;
+        ForceAllGameplayBlocksOpaque();
+        yield return null;
+        ForceAllGameplayBlocksOpaque();
+        yield return null;
+        ForceAllGameplayBlocksOpaque();
+        yield return new WaitForEndOfFrame();
+        ForceAllGameplayBlocksOpaque();
     }
 
     void HandleBoardSettledSave() => SaveToDisk();
@@ -164,13 +201,17 @@ public sealed class SaveManager : MonoBehaviour
             return;
         }
 
+        ForceAllGameplayBlocksOpaque();
         ScheduleDeferredRefreshGameplayVisualOpacity();
     }
 
     void OnApplicationFocus(bool hasFocus)
     {
         if (hasFocus)
+        {
+            ForceAllGameplayBlocksOpaque();
             ScheduleDeferredRefreshGameplayVisualOpacity();
+        }
     }
 
     void ScheduleDeferredRefreshGameplayVisualOpacity()
@@ -190,13 +231,15 @@ public sealed class SaveManager : MonoBehaviour
         RefreshGameplayVisualOpacity();
     }
 
-    void RefreshGameplayVisualOpacity()
+    void ForceAllGameplayBlocksOpaque()
     {
         if (gridManager != null)
-            gridManager.RefreshAllPlacedBlockOpacity();
+            gridManager.ForceAllBlocksOpaque();
         if (shapeSpawner != null)
             shapeSpawner.RefreshAllShapesOpacity();
     }
+
+    void RefreshGameplayVisualOpacity() => ForceAllGameplayBlocksOpaque();
 
     void OnApplicationQuit()
     {

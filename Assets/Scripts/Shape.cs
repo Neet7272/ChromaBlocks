@@ -195,7 +195,7 @@ public sealed class Shape : MonoBehaviour
     /// <summary>Tepsi / kayıt sonrası hayalet (soluk) blokları düzeltir.</summary>
     public void EnsureBlocksFullyOpaque()
     {
-        BlockColorUtils.EnsureOpaqueHierarchy(transform);
+        BlockColorUtils.ForceOpaqueVisualHierarchy(transform);
     }
 
     /// <summary>Sürükleme / ölçek tween sonrası çocuk blokları Rebuild düzenine geri sarar.</summary>

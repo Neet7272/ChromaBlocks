@@ -71,8 +71,7 @@ public sealed class SettingsManager : MonoBehaviour
         if (_isInitializing)
             return;
 
-        if (AudioManager.Instance != null)
-            AudioManager.Instance.PlayUiClickSfx();
+        AudioManager.Instance?.PlayUiClickSfxForced();
 
         BgmEnabled = isOn;
         AudioManager.Instance?.SetBgmEnabled(isOn);
@@ -83,8 +82,7 @@ public sealed class SettingsManager : MonoBehaviour
         if (_isInitializing)
             return;
 
-        if (AudioManager.Instance != null)
-            AudioManager.Instance.PlayUiClickSfx();
+        AudioManager.Instance?.PlayUiClickSfxForced();
 
         SfxEnabled = isOn;
         AudioManager.Instance?.SetSfxEnabled(isOn);
@@ -95,8 +93,7 @@ public sealed class SettingsManager : MonoBehaviour
         if (_isInitializing)
             return;
 
-        if (AudioManager.Instance != null)
-            AudioManager.Instance.PlayUiClickSfx();
+        AudioManager.Instance?.PlayUiClickSfxForced();
 
         VibrationEnabled = isOn;
         HapticManager.SetHapticEnabled(isOn);

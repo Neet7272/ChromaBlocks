@@ -51,12 +51,68 @@ public sealed class GridManager : MonoBehaviour
     public float Spacing => spacing;
     public Vector2 CellWorldSize => _cellWorldSize;
 
+    /// <summary>
+    /// Sürüklenen şekil kökü: tahtaya konan blokla aynı görsel boyut (NormalizePlacedBlockScale ile aynı intrinsic).
+    /// </summary>
+    public bool TryGetHeldShapeLocalScale(Transform shapeRoot, out Vector3 localScale)
+    {
+        localScale = Vector3.one;
+        if (shapeRoot == null || _cellWorldSize.x <= 0f || _cellWorldSize.y <= 0f)
+            return false;
+
+        if (!TryGetShapeBlockSpriteIntrinsic(shapeRoot, out var intrinsic))
+            return false;
+
+        var ps = shapeRoot.parent != null ? shapeRoot.parent.lossyScale : Vector3.one;
+        var px = Mathf.Max(Mathf.Abs(ps.x), 1e-6f);
+        var py = Mathf.Max(Mathf.Abs(ps.y), 1e-6f);
+
+        localScale = new Vector3(
+            _cellWorldSize.x / (intrinsic.x * px),
+            _cellWorldSize.y / (intrinsic.y * py),
+            1f);
+        return true;
+    }
+
+    static bool TryGetShapeBlockSpriteIntrinsic(Transform shapeRoot, out Vector2 intrinsic)
+    {
+        intrinsic = default;
+        if (shapeRoot == null)
+            return false;
+
+        SpriteRenderer sr = null;
+        if (shapeRoot.TryGetComponent<Shape>(out var shape) && shape.Blocks != null && shape.Blocks.Count > 0)
+        {
+            var t = shape.Blocks[0].Transform;
+            if (t != null)
+                t.TryGetComponent(out sr);
+        }
+
+        if (sr == null || sr.sprite == null)
+            sr = shapeRoot.GetComponentInChildren<SpriteRenderer>(true);
+
+        if (sr == null || sr.sprite == null)
+            return false;
+
+        var sprite = sr.sprite;
+        intrinsic = new Vector2(
+            sprite.rect.width / sprite.pixelsPerUnit,
+            sprite.rect.height / sprite.pixelsPerUnit);
+        return intrinsic.x > 0f && intrinsic.y > 0f;
+    }
+
     /// <summary>2x2 patlama zinciri çalışırken tepsi refill'i vb. bekletilmeli (tahta durumu henüz kesin değil).</summary>
     public bool IsResolvingMatches => _isResolvingMatches;
 
     ShapeSpawner _shapeSpawner;
 
     const int MaxShapeBlocks = 25;
+
+    /// <summary>GridCell (~0.78 alpha) üstüne binmesin; pause/continue sonrası soluk görünümü önler.</summary>
+    const int PlacedBlockSortingOrder = 10;
+
+    /// <summary>2D: kameraya daha yakın (ön plan).</summary>
+    const float PlacedBlockZOffset = -0.01f;
 
     /// <summary>
     /// Monokrom 2x2 sol-alt köşesi (x,y) iken temizlenecek <b>sabit</b> 12 hücre ofsetleri.
@@ -153,6 +209,80 @@ public sealed class GridManager : MonoBehaviour
         else
             EnsurePlacementScratchBuffers();
     }
+
+    void OnApplicationPause(bool pauseStatus)
+    {
+        if (!pauseStatus)
+            ForceAllBlocksOpaque();
+    }
+
+    void OnApplicationFocus(bool hasFocus)
+    {
+        if (hasFocus)
+            ForceAllBlocksOpaque();
+    }
+
+    /// <summary>Arka plandan dönüş / odak / kayıt: tahtadaki tüm bloklar tam opak.</summary>
+    public void ForceAllBlocksOpaque()
+    {
+        ResetAllCellHighlights();
+        EnsurePlacedBlocksRoot();
+
+        if (_placedBlocksRoot != null)
+        {
+            _placedBlocksRoot.DOKill();
+            for (int i = 0; i < _placedBlocksRoot.childCount; i++)
+            {
+                var child = _placedBlocksRoot.GetChild(i);
+                if (child == null)
+                    continue;
+
+                child.DOKill();
+                BlockColorUtils.ForceOpaqueVisualHierarchy(child);
+            }
+        }
+
+        RefreshAllPlacedBlockOpacity();
+    }
+
+    public void ResetAllCellHighlights()
+    {
+        if (gridArray == null)
+            return;
+
+        for (int y = 0; y < rows; y++)
+        {
+            for (int x = 0; x < columns; x++)
+            {
+                var cell = gridArray[x, y];
+                cell?.ResetHighlight();
+            }
+        }
+    }
+
+    void ApplyPlacedBlockDrawOrder(Transform blockTransform, Transform cellTransform)
+    {
+        if (blockTransform == null)
+            return;
+
+        var renderers = blockTransform.GetComponentsInChildren<SpriteRenderer>(true);
+        for (int i = 0; i < renderers.Length; i++)
+        {
+            var sr = renderers[i];
+            if (sr != null)
+                sr.sortingOrder = PlacedBlockSortingOrder;
+        }
+
+        if (cellTransform == null)
+            return;
+
+        var p = blockTransform.position;
+        p.z = cellTransform.position.z + PlacedBlockZOffset;
+        blockTransform.position = p;
+    }
+
+    /// <summary>Eski API — <see cref="ForceAllBlocksOpaque"/> ile aynı.</summary>
+    public void ForceRefreshPlacedBlocksOpaque() => ForceAllBlocksOpaque();
 
     void EnsurePlacementScratchBuffers()
     {
@@ -662,14 +792,13 @@ public sealed class GridManager : MonoBehaviour
         _previewClearCells.Clear();
         ResetHighlights();
 
-        if (!TryCollectPreviewPlacementCells(shape, anchor, _placementTargetCells, out var fullPlacement))
+        if (!CanPlaceShape(shape, out var cells, out _))
+        {
+            ClearPreview();
             return;
+        }
 
-        var cells = _placementTargetCells;
-
-        if (fullPlacement &&
-            TrySimulateClearAfterPlacement(shape, anchor) &&
-            _previewClearCells.Count > 0)
+        if (TrySimulateClearAfterPlacement(shape, anchor) && _previewClearCells.Count > 0)
         {
             foreach (var cell in _previewClearCells)
                 HighlightPredictiveClear(cell);
@@ -884,7 +1013,7 @@ public sealed class GridManager : MonoBehaviour
             }
         }
 
-        RefreshAllPlacedBlockOpacity();
+        ForceAllBlocksOpaque();
 
         AudioManager.PlayPlaceSfxSafe();
 
@@ -1025,11 +1154,13 @@ public sealed class GridManager : MonoBehaviour
         };
     }
 
-    /// <summary>Revive: son tepsi spawn'ından beri yapılan yerleştirmeleri geri al.</summary>
-    public void RestoreTraySnapshot()
+    /// <summary>Revive: son tepsi spawn'ından beri yapılan yerleştirmeleri geri al. Skor korunur.</summary>
+    public void RestoreTraySnapshot(bool preserveCurrentScore = true)
     {
         if (_traySnapshot == null || gridArray == null)
             return;
+
+        var scoreBeforeRestore = _score;
 
         if (_cascadeRoutine != null)
         {
@@ -1070,13 +1201,19 @@ public sealed class GridManager : MonoBehaviour
                 var go = Instantiate(blockPrefab, _placedBlocksRoot);
                 go.name = $"ReviveBlock_{x}_{y}";
 
-                FinalizePlacedBlockOnCell(go.transform, cell, _traySnapshot.colors[x, y]);
+                var reviveColor = BlockColorUtils.WithOpaqueAlpha(_traySnapshot.colors[x, y]);
+                FinalizePlacedBlockOnCell(go.transform, cell, reviveColor);
+                BlockColorUtils.ForceOpaqueVisualHierarchy(go.transform, reviveColor);
             }
         }
 
-        _score = _traySnapshot.score;
+        if (preserveCurrentScore)
+            _score = scoreBeforeRestore;
+        else
+            _score = _traySnapshot.score;
+
         OnScoreChanged?.Invoke(_score, 0, null);
-        RefreshAllPlacedBlockOpacity();
+        ForceAllBlocksOpaque();
     }
 
     /// <summary>Kayıt: düz dizi (sıra: y=0..rows-1, x=0..columns-1 → idx = y * columns + x). Aynı tamponlar tekrar kullanılır.</summary>
@@ -1186,11 +1323,12 @@ public sealed class GridManager : MonoBehaviour
                 var go = Instantiate(blockPrefab, _placedBlocksRoot);
                 go.name = $"SaveBlock_{x}_{y}";
                 FinalizePlacedBlockOnCell(go.transform, cell, c);
+                BlockColorUtils.ForceOpaqueVisualHierarchy(go.transform, c);
                 idx++;
             }
         }
 
-        RefreshAllPlacedBlockOpacity();
+        ForceAllBlocksOpaque();
         return true;
     }
 
@@ -1205,7 +1343,8 @@ public sealed class GridManager : MonoBehaviour
         NormalizePlacedBlockScale(blockTransform);
         PerfectMagnetSnap(blockTransform, cell.transform);
         BlockColorUtils.EnsureOpaqueBlock(blockTransform, opaque);
-        BlockColorUtils.EnsureOpaqueHierarchy(blockTransform);
+        BlockColorUtils.ForceOpaqueVisualHierarchy(blockTransform, opaque);
+        ApplyPlacedBlockDrawOrder(blockTransform, cell.transform);
         cell.SetPlacedBlock(blockTransform, opaque);
     }
 
@@ -1228,8 +1367,11 @@ public sealed class GridManager : MonoBehaviour
                     continue;
 
                 var opaque = BlockColorUtils.WithOpaqueAlpha(cell.PlacedColor);
+                block.DOKill();
                 BlockColorUtils.EnsureOpaqueBlock(block, opaque);
-                BlockColorUtils.EnsureOpaqueHierarchy(block);
+                BlockColorUtils.ForceOpaqueVisualHierarchy(block, opaque);
+                ApplyPlacedBlockDrawOrder(block, cell.transform);
+                cell.SetPlacedBlock(block, opaque);
             }
         }
     }
@@ -1297,7 +1439,7 @@ public sealed class GridManager : MonoBehaviour
         _comboMultiplier = 0;
         _isResolvingMatches = false;
         _cascadeRoutine = null;
-        RefreshAllPlacedBlockOpacity();
+        ForceAllBlocksOpaque();
         ClearPreview();
         OnBoardSettled?.Invoke();
     }

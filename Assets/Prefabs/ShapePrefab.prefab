@@ -110,6 +110,7 @@ MonoBehaviour:
   dragYOffset: 1.5
   returnDuration: 0.18
   heldScale: {x: 1, y: 1, z: 1}
+  scaleToGridCellSize: 1
   pickupScaleDuration: 0.15
   dragFollowDuration: 0.06
   gridManager: {fileID: 0}

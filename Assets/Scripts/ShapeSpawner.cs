@@ -24,6 +24,10 @@ public sealed class ShapeSpawner : MonoBehaviour
     public GameObject SharedBlockPrefab => blockPrefab;
     public Vector3 TrayRestingLocalScale => spawnLocalScale;
 
+    public Transform LeftSpawnPoint => leftSpawnPoint;
+    public Transform MiddleSpawnPoint => middleSpawnPoint;
+    public Transform RightSpawnPoint => rightSpawnPoint;
+
     [Header("Layout")]
     [SerializeField, Min(0f)] float shapeSpacing = 0f;
 
@@ -55,6 +59,7 @@ public sealed class ShapeSpawner : MonoBehaviour
     Shape _right;
 
     Coroutine _deferredSettleCheck;
+    float _suppressGameOverCheckUntil;
 
     void Awake()
     {
@@ -113,6 +118,9 @@ public sealed class ShapeSpawner : MonoBehaviour
         if (_isGameOver)
             yield break;
 
+        if (Time.realtimeSinceStartup < _suppressGameOverCheckUntil)
+            yield break;
+
         if (gridManager == null)
             yield break;
 
@@ -161,6 +169,7 @@ public sealed class ShapeSpawner : MonoBehaviour
     public void ClearGameOverState()
     {
         _isGameOver = false;
+        _suppressGameOverCheckUntil = 0f;
     }
 
     public void DestroyCurrentShapes()
@@ -168,7 +177,7 @@ public sealed class ShapeSpawner : MonoBehaviour
         DespawnAll();
     }
 
-    /// <summary>Revive: son tepsi hamlelerini geri sar, yeni 3 şekil ver.</summary>
+    /// <summary>Revive: son tepsi hamlelerini geri sar, en az bir hamlesi olan 3 şekil ver.</summary>
     public void ReviveTray()
     {
         if (_deferredSettleCheck != null)
@@ -180,8 +189,13 @@ public sealed class ShapeSpawner : MonoBehaviour
         if (gridManager != null)
             gridManager.RestoreTraySnapshot();
 
-        DespawnAll();
-        SpawnNewShapes();
+        _suppressGameOverCheckUntil = Time.realtimeSinceStartup
+            + traySpawnScaleDuration + traySpawnStagger * 2f + 0.35f;
+
+        SpawnThreeRandomShapesWithPlayableRetry();
+        FinalizeInstantTrayVisuals(_left, _middle, _right);
+        CaptureTraySnapshot();
+        ScheduleMoveAvailabilityCheck();
     }
 
     void CaptureTraySnapshot()
@@ -260,6 +274,7 @@ public sealed class ShapeSpawner : MonoBehaviour
         _right = SpawnAtFromSaveSlot(rightSpawnPoint, slots[2]);
 
         FinalizeInstantTrayVisuals(_left, _middle, _right);
+        RefreshAllShapesOpacity();
 
         CaptureTraySnapshot();
         ScheduleMoveAvailabilityCheck();
@@ -293,9 +308,24 @@ public sealed class ShapeSpawner : MonoBehaviour
     void Start()
     {
         if (SaveManager.ConsumeRestoredFromSaveFlag())
+        {
+            EnsureTrayShapesVisible();
+            StartCoroutine(TrayStartupSafetyRoutine());
             return;
+        }
 
         SpawnInitialThree();
+        StartCoroutine(TrayStartupSafetyRoutine());
+    }
+
+    /// <summary>Intro tween takılırsa görünürlük düzeltir; yeni şekil spawn etmez.</summary>
+    IEnumerator TrayStartupSafetyRoutine()
+    {
+        yield return null;
+        yield return null;
+        if (_isGameOver)
+            yield break;
+        EnsureTrayShapesVisible();
     }
 
     void Update()
@@ -344,16 +374,65 @@ public sealed class ShapeSpawner : MonoBehaviour
             return;
         }
 
-        DespawnAll();
-
-        _left = SpawnAt(leftSpawnPoint, GetRandomShapeData());
-        _middle = SpawnAt(middleSpawnPoint, GetRandomShapeData());
-        _right = SpawnAt(rightSpawnPoint, GetRandomShapeData());
-
-        PlayTraySpawnIntro(_left, _middle, _right);
+        SpawnThreeRandomShapesWithPlayableRetry();
+        FinalizeInstantTrayVisuals(_left, _middle, _right);
 
         CaptureTraySnapshot();
         ScheduleMoveAvailabilityCheck();
+    }
+
+    /// <summary>Yalnızca scale 0 kalan şekilleri düzeltir; boş slota yeni şekil koymaz.</summary>
+    public void EnsureTrayShapesVisible()
+    {
+        if (_isGameOver)
+            return;
+
+        EnsureTrayShapeVisible(_left);
+        EnsureTrayShapeVisible(_middle);
+        EnsureTrayShapeVisible(_right);
+    }
+
+    void EnsureTrayShapeVisible(Shape slot)
+    {
+        if (slot == null)
+            return;
+
+        var t = slot.transform;
+        if (t == null)
+            return;
+
+        t.DOKill();
+        if (t.localScale.sqrMagnitude < spawnLocalScale.x * spawnLocalScale.x * 0.04f)
+            t.localScale = spawnLocalScale;
+    }
+
+    /// <summary>Rastgele 3 şekil; en az biri tahtaya sığana kadar sınırsız dene (donma önlemi: güvenlik tavanı).</summary>
+    void SpawnThreeRandomShapesWithPlayableRetry()
+    {
+        if (leftSpawnPoint == null || middleSpawnPoint == null || rightSpawnPoint == null)
+            return;
+
+        DespawnAll();
+
+        const int safetyCap = 100;
+        for (int attempt = 0; attempt < safetyCap; attempt++)
+        {
+            if (attempt > 0)
+                DespawnAll();
+
+            _left = SpawnAt(leftSpawnPoint, GetRandomShapeData());
+            _middle = SpawnAt(middleSpawnPoint, GetRandomShapeData());
+            _right = SpawnAt(rightSpawnPoint, GetRandomShapeData());
+
+            if (gridManager == null)
+                return;
+
+            if (gridManager.CheckForAvailableMoves(GetActiveShapes()))
+                return;
+        }
+
+        DevelopmentDiagnostics.LogWarning(
+            "[ShapeSpawner] Oynanabilir tepsi bulunamadı (tahta dolu olabilir); son set bırakıldı.", this);
     }
 
     Shape SpawnAt(Transform point, ShapeData data)
@@ -410,19 +489,22 @@ public sealed class ShapeSpawner : MonoBehaviour
         return shape;
     }
 
-    static void FinalizeInstantTrayVisuals(Shape a, Shape b, Shape c)
+    void FinalizeInstantTrayVisuals(Shape a, Shape b, Shape c)
     {
-        FinalizeOne(a);
-        FinalizeOne(b);
-        FinalizeOne(c);
+        FinalizeOne(a, spawnLocalScale);
+        FinalizeOne(b, spawnLocalScale);
+        FinalizeOne(c, spawnLocalScale);
     }
 
-    static void FinalizeOne(Shape shape)
+    static void FinalizeOne(Shape shape, Vector3 restingScale)
     {
         if (shape == null)
             return;
 
-        shape.transform.DOKill();
+        var t = shape.transform;
+        t.DOKill();
+        if (t.localScale.sqrMagnitude < restingScale.x * restingScale.x * 0.04f)
+            t.localScale = restingScale;
         shape.EnsureBlocksFullyOpaque();
         if (shape.TryGetComponent<ShapeDragController>(out var drag))
             drag.UpdateColliderBounds();

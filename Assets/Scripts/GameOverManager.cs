@@ -1,3 +1,4 @@
+using System.Collections.Generic;
 using TMPro;
 using UnityEngine;
 using UnityEngine.UI;
@@ -5,18 +6,27 @@ using UnityEngine.EventSystems;
 using DG.Tweening;
 
 /// <summary>
-/// Matte Structural Game Over paneli + tek seferlik Revive.
+/// İki aşamalı Game Over: ilk kayıp (revive) + revive sonrası kayıp (ayrı görsel).
 /// </summary>
 public sealed class GameOverManager : MonoBehaviour
 {
     const string PrefBestScore = "ChromaBlocks_BestScore";
 
-    [Header("Panel")]
+    [Header("Paneller")]
+    [Tooltip("İlk game over — Revive butonu burada.")]
+    public GameObject gameOverPanelFirst;
+    [Tooltip("Revive kullanıldıktan sonraki game over — yeni görselin.")]
+    public GameObject gameOverPanelFinal;
+    [Tooltip("Eski alan: boşsa gameOverPanelFirst ile aynı kabul edilir.")]
     public GameObject gameOverPanel;
 
-    [Header("Skor (slot — 5 ayrı rakam TMP)")]
+    [Header("Skor — First panel")]
     public TextMeshProUGUI[] scoreDigits;
     public TextMeshProUGUI bestScoreText;
+
+    [Header("Skor — Final panel (boşsa Final kökünden otomatik bulunur)")]
+    public TextMeshProUGUI[] scoreDigitsFinal;
+    public TextMeshProUGUI bestScoreTextFinal;
 
     [Header("Butonlar")]
     public Button btnRevive;
@@ -44,9 +54,12 @@ public sealed class GameOverManager : MonoBehaviour
 
     bool hasRevivedThisGame;
 
+    GameObject _activePanelRoot;
     CanvasGroup _panelCanvasGroup;
     RectTransform _panelRect;
     RectTransform _replayPulseTarget;
+    TextMeshProUGUI[] _activeScoreDigits;
+    TextMeshProUGUI _activeBestScoreText;
 
     Sequence _introSequence;
     Tween _scoreTween;
@@ -54,6 +67,8 @@ public sealed class GameOverManager : MonoBehaviour
 
     void Awake()
     {
+        DisableDuplicateManagersOnOtherObjects();
+
         if (gridManager == null)
             gridManager = FindAnyObjectByType<GridManager>();
         if (shapeSpawner == null)
@@ -61,21 +76,207 @@ public sealed class GameOverManager : MonoBehaviour
         if (uiManager == null)
             uiManager = FindAnyObjectByType<UIManager>();
 
-        CachePanelRefs();
+        ResolvePanelReferences();
+        _activeScoreDigits = scoreDigits;
+        _activeBestScoreText = bestScoreText;
         PreparePanelHidden();
     }
 
-    void CachePanelRefs()
+    /// <summary>Final panelde yanlışlıkla ikinci GameOverManager varsa kapat.</summary>
+    void DisableDuplicateManagersOnOtherObjects()
     {
-        if (gameOverPanel == null)
+        var all = FindObjectsByType<GameOverManager>(FindObjectsInactive.Include);
+        for (int i = 0; i < all.Length; i++)
+        {
+            var other = all[i];
+            if (other == null || other == this)
+                continue;
+
+            if (other.enabled)
+            {
+                DevelopmentDiagnostics.LogWarning(
+                    "[GameOverManager] Yinelenen bileşen kapatıldı: " + other.gameObject.name, other);
+                other.enabled = false;
+            }
+        }
+    }
+
+    void ResolvePanelReferences()
+    {
+        if (gameOverPanelFirst == null && gameOverPanel != null)
+            gameOverPanelFirst = gameOverPanel;
+
+        AutoFindPanelsUnderCanvas();
+    }
+
+    /// <summary>Inspector boşsa Canvas altında isimle bul (GameOverPanel_First / _Final).</summary>
+    void AutoFindPanelsUnderCanvas()
+    {
+        var canvas = GetComponentInParent<Canvas>();
+        if (canvas == null)
             return;
 
-        _panelCanvasGroup = gameOverPanel.GetComponent<CanvasGroup>();
-        if (_panelCanvasGroup == null)
-            _panelCanvasGroup = gameOverPanel.AddComponent<CanvasGroup>();
+        if (gameOverPanelFirst == null)
+            gameOverPanelFirst = FindPanelByName(canvas.transform, "GameOverPanel_First");
 
-        _panelRect = gameOverPanel.transform as RectTransform;
+        if (gameOverPanelFinal == null)
+            gameOverPanelFinal = FindPanelByName(canvas.transform, "GameOverPanel_Final");
+    }
+
+    static GameObject FindPanelByName(Transform root, string objectName)
+    {
+        if (root == null || string.IsNullOrEmpty(objectName))
+            return null;
+
+        if (root.name == objectName)
+            return root.gameObject;
+
+        for (int i = 0; i < root.childCount; i++)
+        {
+            var found = FindPanelByName(root.GetChild(i), objectName);
+            if (found != null)
+                return found;
+        }
+
+        return null;
+    }
+
+    GameObject SelectPanelForCurrentGameOver()
+    {
+        ResolvePanelReferences();
+        if (hasRevivedThisGame && gameOverPanelFinal != null)
+            return gameOverPanelFinal;
+        return gameOverPanelFirst;
+    }
+
+    void CachePanelRefs(GameObject panelRoot)
+    {
+        _activePanelRoot = panelRoot;
+        if (panelRoot == null)
+            return;
+
+        _panelCanvasGroup = panelRoot.GetComponent<CanvasGroup>();
+        if (_panelCanvasGroup == null)
+            _panelCanvasGroup = panelRoot.AddComponent<CanvasGroup>();
+
+        _panelRect = panelRoot.transform as RectTransform;
         _replayPulseTarget = btnReplay != null ? btnReplay.transform as RectTransform : null;
+        CacheScoreUiForPanel(panelRoot);
+    }
+
+    void CacheScoreUiForPanel(GameObject panelRoot)
+    {
+        _activeScoreDigits = scoreDigits;
+        _activeBestScoreText = bestScoreText;
+
+        if (panelRoot != gameOverPanelFinal)
+            return;
+
+        if (scoreDigitsFinal != null && scoreDigitsFinal.Length >= 5)
+            _activeScoreDigits = scoreDigitsFinal;
+
+        if (TryFindScoreDigitsInPanel(panelRoot, out var autoDigits))
+            _activeScoreDigits = autoDigits;
+
+        if (bestScoreTextFinal != null)
+            _activeBestScoreText = bestScoreTextFinal;
+        else if (TryFindBestScoreLabelInPanel(panelRoot, out var autoBest))
+            _activeBestScoreText = autoBest;
+    }
+
+    static bool TryFindScoreDigitsInPanel(GameObject panelRoot, out TextMeshProUGUI[] digits)
+    {
+        digits = null;
+        if (panelRoot == null)
+            return false;
+
+        var tmps = panelRoot.GetComponentsInChildren<TextMeshProUGUI>(true);
+        var slots = new List<TextMeshProUGUI>(5);
+        for (int i = 0; i < tmps.Length; i++)
+        {
+            var t = tmps[i];
+            if (t == null)
+                continue;
+
+            var n = t.name;
+            if (n.IndexOf("best", System.StringComparison.OrdinalIgnoreCase) >= 0)
+                continue;
+            if (n.StartsWith("Score", System.StringComparison.OrdinalIgnoreCase))
+                slots.Add(t);
+        }
+
+        if (slots.Count < 5)
+            return false;
+
+        slots.Sort((a, b) => string.CompareOrdinal(a.name, b.name));
+        digits = new TextMeshProUGUI[5];
+        for (int i = 0; i < 5; i++)
+            digits[i] = slots[i];
+        return true;
+    }
+
+    static bool TryFindBestScoreLabelInPanel(GameObject panelRoot, out TextMeshProUGUI bestLabel)
+    {
+        bestLabel = null;
+        if (panelRoot == null)
+            return false;
+
+        var tmps = panelRoot.GetComponentsInChildren<TextMeshProUGUI>(true);
+        for (int i = 0; i < tmps.Length; i++)
+        {
+            var t = tmps[i];
+            if (t != null && t.name.IndexOf("best", System.StringComparison.OrdinalIgnoreCase) >= 0)
+            {
+                bestLabel = t;
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /// <summary>Manager panelin üzerindeyse objeyi kapatma; yalnızca alpha ile gizle.</summary>
+    void HidePanelVisual(GameObject panel)
+    {
+        if (panel == null)
+            return;
+
+        if (panel == gameObject)
+        {
+            var cg = panel.GetComponent<CanvasGroup>();
+            if (cg == null)
+                cg = panel.AddComponent<CanvasGroup>();
+            cg.alpha = 0f;
+            cg.blocksRaycasts = false;
+            cg.interactable = false;
+            return;
+        }
+
+        panel.SetActive(false);
+    }
+
+    void ShowPanelVisual(GameObject panel)
+    {
+        if (panel == null)
+            return;
+
+        if (!panel.activeSelf)
+            panel.SetActive(true);
+
+        if (panel == gameObject)
+        {
+            var cg = panel.GetComponent<CanvasGroup>();
+            if (cg == null)
+                cg = panel.AddComponent<CanvasGroup>();
+            cg.blocksRaycasts = true;
+            cg.interactable = true;
+        }
+    }
+
+    void HideAllGameOverPanels()
+    {
+        HidePanelVisual(gameOverPanelFirst);
+        HidePanelVisual(gameOverPanelFinal);
     }
 
     void OnDisable()
@@ -86,21 +287,29 @@ public sealed class GameOverManager : MonoBehaviour
     /// <summary>ShapeSpawner.EnterGameOver → buradan çağrılır.</summary>
     public void EnterGameOver()
     {
-        CachePanelRefs();
+        ResolvePanelReferences();
+        HideAllGameOverPanels();
 
-        if (gameOverPanel == null)
+        var panel = SelectPanelForCurrentGameOver();
+        if (panel == null)
         {
-            DevelopmentDiagnostics.LogError("[GameOverManager] gameOverPanel atanmamış.", this);
+            DevelopmentDiagnostics.LogError(
+                "[GameOverManager] gameOverPanelFirst / gameOverPanelFinal atanmamış.", this);
             return;
         }
+
+        if (hasRevivedThisGame && gameOverPanelFinal == null)
+            DevelopmentDiagnostics.LogWarning(
+                "[GameOverManager] Revive sonrası kayıp: gameOverPanelFinal Inspector'da atanmalı.", this);
+
+        CachePanelRefs(panel);
 
         ClearSaveDataBeforeSceneChange();
 
         KillTweens();
         SetPhysicsRaycastersEnabled(false);
 
-        if (!gameOverPanel.activeSelf)
-            gameOverPanel.SetActive(true);
+        ShowPanelVisual(panel);
 
         if (_panelCanvasGroup != null)
         {
@@ -121,19 +330,16 @@ public sealed class GameOverManager : MonoBehaviour
         PlayPanelIntro();
         TrySubmitScoreToLeaderboard();
 
-        DevelopmentDiagnostics.Log("[GameOverManager] Panel gösterildi.");
+        DevelopmentDiagnostics.Log(hasRevivedThisGame
+            ? "[GameOverManager] Final panel (revive tükendi)."
+            : "[GameOverManager] İlk panel (revive mümkün).");
     }
 
     /// <summary>Başlangıçta paneli gizle — manager aynı objedeyse yalnızca alpha ile.</summary>
     void PreparePanelHidden()
     {
         KillTweens();
-
-        if (gameOverPanel == null)
-            return;
-
-        if (gameOverPanel != gameObject)
-            gameOverPanel.SetActive(false);
+        HideAllGameOverPanels();
 
         if (_panelCanvasGroup != null)
         {
@@ -154,7 +360,9 @@ public sealed class GameOverManager : MonoBehaviour
         if (btnRevive == null)
             return;
 
-        btnRevive.gameObject.SetActive(!hasRevivedThisGame);
+        // Revive yalnızca ilk game over panelinde; final panelde asla gösterme.
+        var showRevive = !hasRevivedThisGame && _activePanelRoot == gameOverPanelFirst;
+        btnRevive.gameObject.SetActive(showRevive);
     }
 
     void RefreshBestScoreLabel()
@@ -169,15 +377,17 @@ public sealed class GameOverManager : MonoBehaviour
             PlayerPrefs.Save();
         }
 
-        if (bestScoreText != null)
+        if (_activeBestScoreText != null)
+            _activeBestScoreText.text = best.ToString();
+        else if (bestScoreText != null)
             bestScoreText.text = best.ToString();
     }
 
     void AnimateScoreCount()
     {
-        if (scoreDigits == null || scoreDigits.Length < 5)
+        if (_activeScoreDigits == null || _activeScoreDigits.Length < 5)
         {
-            DevelopmentDiagnostics.LogWarning("[GameOverManager] scoreDigits atanmalı ve en az 5 elemanlı olmalı.", this);
+            DevelopmentDiagnostics.LogWarning("[GameOverManager] Aktif panelde scoreDigits (5 slot) bulunamadı.", this);
             return;
         }
 
@@ -196,8 +406,8 @@ public sealed class GameOverManager : MonoBehaviour
                 var scoreString = tempScore.ToString("D5");
                 for (int i = 0; i < 5; i++)
                 {
-                    if (scoreDigits[i] != null)
-                        scoreDigits[i].text = scoreString[i].ToString();
+                    if (_activeScoreDigits[i] != null)
+                        _activeScoreDigits[i].text = scoreString[i].ToString();
                 }
             })
             .OnComplete(() =>
@@ -206,14 +416,14 @@ public sealed class GameOverManager : MonoBehaviour
                 var scoreString = tempScore.ToString("D5");
                 for (int i = 0; i < 5; i++)
                 {
-                    if (scoreDigits[i] != null)
-                        scoreDigits[i].text = scoreString[i].ToString();
+                    if (_activeScoreDigits[i] != null)
+                        _activeScoreDigits[i].text = scoreString[i].ToString();
                 }
 
                 var punch = new Vector3(0.2f, 0.2f, 0f);
-                for (int i = 0; i < scoreDigits.Length; i++)
+                for (int i = 0; i < _activeScoreDigits.Length; i++)
                 {
-                    var d = scoreDigits[i];
+                    var d = _activeScoreDigits[i];
                     if (d == null)
                         continue;
                     d.transform.DOKill(true);
@@ -224,22 +434,25 @@ public sealed class GameOverManager : MonoBehaviour
 
     void ApplySlotDigits(int value)
     {
+        if (_activeScoreDigits == null)
+            return;
+
         var scoreString = Mathf.Max(0, value).ToString("D5");
-        for (int i = 0; i < 5 && i < scoreDigits.Length; i++)
+        for (int i = 0; i < 5 && i < _activeScoreDigits.Length; i++)
         {
-            if (scoreDigits[i] != null)
-                scoreDigits[i].text = scoreString[i].ToString();
+            if (_activeScoreDigits[i] != null)
+                _activeScoreDigits[i].text = scoreString[i].ToString();
         }
     }
 
     void KillScoreDigitTweens()
     {
-        if (scoreDigits == null)
+        if (_activeScoreDigits == null)
             return;
 
-        for (int i = 0; i < scoreDigits.Length; i++)
+        for (int i = 0; i < _activeScoreDigits.Length; i++)
         {
-            var d = scoreDigits[i];
+            var d = _activeScoreDigits[i];
             if (d == null)
                 continue;
             d.DOKill();
@@ -287,9 +500,7 @@ public sealed class GameOverManager : MonoBehaviour
 
         hasRevivedThisGame = true;
         KillTweens();
-
-        if (gameOverPanel != null)
-            gameOverPanel.SetActive(false);
+        HideAllGameOverPanels();
 
         SetPhysicsRaycastersEnabled(true);
 
@@ -303,6 +514,7 @@ public sealed class GameOverManager : MonoBehaviour
     public void OnReplayButtonClicked()
     {
         PlayUiClick();
+        ResetReviveSession();
         ClearSaveDataBeforeSceneChange();
         if (uiManager != null)
             uiManager.RestartGame();
@@ -311,9 +523,16 @@ public sealed class GameOverManager : MonoBehaviour
     public void OnHomeButtonClicked()
     {
         PlayUiClick();
+        ResetReviveSession();
         ClearSaveDataBeforeSceneChange();
         if (uiManager != null)
             uiManager.GoToMainMenu();
+    }
+
+    /// <summary>Yeni oyun / sahne yenileme: revive hakkı sıfırlanır.</summary>
+    public void ResetReviveSession()
+    {
+        hasRevivedThisGame = false;
     }
 
     public void OnLeaderboardButtonClicked()

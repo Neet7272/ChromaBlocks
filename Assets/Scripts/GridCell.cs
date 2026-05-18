@@ -63,7 +63,7 @@ public sealed class GridCell : MonoBehaviour
     public void SetPlacedBlock(Transform block, Color color)
     {
         _placedBlock = block;
-        _placedColor = color;
+        _placedColor = BlockColorUtils.WithOpaqueAlpha(color);
         isOccupied = block != null;
     }
 
